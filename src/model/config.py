@@ -14,6 +14,11 @@ class ObjectDecoderConfig:
 
     n_objects : int = 10
 
+@dataclass
+class CameraDecoderConfig:
+    n_head : int = 4
+    n_layers : int = 4
+
 @dataclass 
 class SceneModelConfig:
     d_model : int = 256
@@ -22,3 +27,4 @@ class SceneModelConfig:
     object_decoder : ObjectDecoderConfig = field(default_factory=ObjectDecoderConfig)
 
     n_classes : int = 2
+    camera_decoder : CameraDecoderConfig = field(default_factory=CameraDecoderConfig)
