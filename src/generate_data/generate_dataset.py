@@ -93,7 +93,7 @@ def sample_rotation(rng):
 
 
 def create_objects(config, rng):
-    objects, occupied = [], []
+    objects, footprints = [], []
     spec = config["objects"]
     for index in range(spec["count"]):
         kind = rng.choice(spec["types"])
@@ -105,17 +105,35 @@ def create_objects(config, rng):
         bpy.context.view_layer.update()
         local_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
         radius = max(math.hypot(v.x, v.y) for v in local_corners)
-        for _ in range(spec["placement_attempts"]):
-            x, y = (rng.uniform(-spec["position_extent"], spec["position_extent"]) for _ in range(2))
-            if all(math.hypot(x-px, y-py) > radius+pr+spec["min_gap"] for px, py, pr in occupied):
-                break
-        else:
-            raise ValueError("Placement impossible : agrandir position_extent ou réduire les objets.")
-        obj.location = (x, y, -min(v.z for v in local_corners))
-        occupied.append((x, y, radius))
+        footprints.append((radius, -min(v.z for v in local_corners)))
         color = [rng.uniform(0.15, 0.85) for _ in range(3)]
         obj.data.materials.append(material(obj.name, color))
         objects.append((kind, obj, color))
+    # Restart the entire layout when an early position blocks later objects.
+    # Keep geometry fixed so retries do not bias the sampled sizes/rotations.
+    layout_attempts = spec.get("layout_attempts", 100)
+    for _ in range(layout_attempts):
+        occupied = []
+        for radius, _ in footprints:
+            for _ in range(spec["placement_attempts"]):
+                x, y = (rng.uniform(-spec["position_extent"], spec["position_extent"]) for _ in range(2))
+                if all(math.hypot(x-px, y-py) > radius+pr+spec["min_gap"] for px, py, pr in occupied):
+                    occupied.append((x, y, radius))
+                    break
+            else:
+                break
+        if len(occupied) == len(objects):
+            for (_, obj, _), (x, y, _), (_, height) in zip(objects, occupied, footprints):
+                obj.location = (x, y, height)
+            break
+    else:
+        raise ValueError(
+            f"Placement impossible après {layout_attempts} dispositions "
+            f"({spec['placement_attempts']} essais par objet) : "
+            f"count={spec['count']}, position_extent={spec['position_extent']}, "
+            f"scale_range={spec['scale_range']}, min_gap={spec['min_gap']}. "
+            "Agrandir position_extent ou réduire le nombre/la taille des objets."
+        )
     bpy.context.view_layer.update()
     return objects
 
@@ -181,6 +199,8 @@ def validate_config(config):
         raise ValueError("scale_range doit contenir deux valeurs positives croissantes.")
     if spec["position_extent"] <= 0 or spec["min_gap"] < 0 or spec["placement_attempts"] < 1:
         raise ValueError("Paramètres de placement invalides.")
+    if not isinstance(spec.get("layout_attempts", 100), int) or spec.get("layout_attempts", 100) < 1:
+        raise ValueError("layout_attempts doit être un entier strictement positif.")
     if len(config["cameras"]["azimuths_deg"]) != 4:
         raise ValueError("Cette version attend exactement quatre caméras.")
     if any(config["cameras"][key] <= 0 for key in ("radius", "lens_mm", "sensor_width_mm")):

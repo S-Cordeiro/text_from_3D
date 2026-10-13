@@ -6,7 +6,7 @@ From the repository root, with Blender installed:
 blender --background --python-exit-code 1 --python generate_data/generate_dataset.py -- --train 2 --val 1 --test 1
 ```
 
-This first run produces 4 scenes (16 PNG images at 224 × 224). To generate a single example:
+This first run produces 4 blender --background --python-exit-code 1 --python generate_data/generate_dataset.py -- --train 1 --val 0 --test 0 --output dataset_previewscenes (16 PNG images at 224 × 224). To generate a single example:
 
 ```bash
 blender --background --python-exit-code 1 --python generate_data/generate_dataset.py -- --train 1 --val 0 --test 0 --output dataset_preview
@@ -36,7 +36,9 @@ Scene numbers are local to each split. A nonempty output directory is rejected t
 
 `generate_data/generation_config.json` contains scene counts, the seed, and rendering, object, and camera settings. `--config path.json` loads another configuration; `--train`, `--val`, `--test`, `--seed`, and `--output` allow quick experiments. Default counts: 6 training scenes, 2 validation scenes, and 2 test scenes.
 
-The four cameras point toward the center of the scene. Cubes have uniformly sampled rotations in SO(3) and independent scaling along each axis. They rest on a ground plane, with disjoint enclosing disks to prevent intersections. This placement method is conservative: for dense scenes, increase `position_extent` or adapt the placement algorithm. Objects can still occlude one another in an image.
+The four cameras point toward the center of the scene. Cubes have uniformly sampled rotations in SO(3) and independent scaling along each axis. They rest on a ground plane, with disjoint enclosing disks to prevent intersections. If an early position blocks later objects, placement restarts for all objects, preserving their sizes and rotations. `objects.placement_attempts` limits position trials per object; optional `objects.layout_attempts` limits complete layout attempts (100 by default). This placement method is conservative: if all attempts fail, increase `position_extent` or reduce object count, size, or `min_gap`. Increasing the extent can also require adjusting camera framing. Objects can still occlude one another in an image.
+
+This placement change alters scenes generated with previous versions, even with the same seed. Runs using the same script, configuration, and Blender version remain reproducible.
 
 To use different views for each split, add settings such as:
 
