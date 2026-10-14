@@ -32,7 +32,10 @@ class SceneModel(nn.Module):
         x_cam = self.camera_decoder(mv_tokens)
         out_cam = self.camera_prediction(x_cam)
 
-        return out_obj | out_cam
+        return {
+            "objects": out_obj,
+            "cameras": out_cam,
+        }
 
 
 
