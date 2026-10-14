@@ -3,7 +3,7 @@ import torch.nn as nn
 from .blocks import SelfAttention, CrossAttention, MLP
 
 
-class cameraDecoderBlock(nn.Module):
+class CameraDecoderBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -35,7 +35,7 @@ class cameraDecoderBlock(nn.Module):
         return queries
 
 
-class cameraDecoder(nn.Module):
+class CameraDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -44,7 +44,7 @@ class cameraDecoder(nn.Module):
 
         self.camera_queries = nn.Embedding(self.n_cameras, config.d_model)
         self.blocks = nn.ModuleList([
-            cameraDecoderBlock(config) for _ in range(self.cdconfig.n_layers)
+            CameraDecoderBlock(config) for _ in range(self.cdconfig.n_layers)
         ])
 
     def forward(self, visual_tokens):
