@@ -1,7 +1,5 @@
 """Supervised losses for the objects and cameras predicted in a scene."""
 
-import math
-
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -17,6 +15,9 @@ class SceneLoss(nn.Module):
     Cameras are paired by view order; only objects require Hungarian matching.
     The returned component losses are unweighted; only ``total`` applies the
     configured weights.
+    Object scale is the local scaling factor, not the object's dimensions.
+    Object rotation predictions concatenate the first two rotation columns.
+    Scale and rotation supervision use the same class/position assignment.
     """
 
     def __init__(
@@ -31,6 +32,8 @@ class SceneLoss(nn.Module):
         self.weights = {
             "object_class": 1.0,
             "object_position": 1.0,
+            "object_scale": 1.0,
+            "object_rotation": 1.0,
             "camera_position": 1.0,
             "camera_rotation": 1.0,
         }
@@ -41,25 +44,26 @@ class SceneLoss(nn.Module):
 
             self.weights.update(weights)
 
-        if any(not math.isfinite(v) or v < 0 for v in self.weights.values()):
-            raise ValueError("Loss weights must be finite and nonnegative")
-
-        if not math.isfinite(no_object_weight) or no_object_weight <= 0:
-            raise ValueError("no_object_weight must be finite and positive")
-
         self.no_object_weight = no_object_weight
         self.matcher = HungarianMatcher(class_cost, position_cost)
 
     def forward(self, pred, targets):
         """Return scalar tensors including the weighted total for backward()."""
-        logits, positions = self._object_predictions(pred)
+        logits, positions, scales, rotations = self._object_predictions(pred)
+        targets = self._normalize_targets(targets, logits.shape[0])
+
+        if len(targets) != logits.shape[0]:
+            raise ValueError("One target scene is required per batch element")
+
+        if pred["cameras"]["position"].shape[0] != logits.shape[0]:
+            raise ValueError("Object and camera predictions must have the same batch size")
 
         object_targets = [
-            self._object_targets(target, logits, positions)
+            self._object_targets(target, logits, positions, scales, rotations)
             for target in targets
         ]
-        target_classes = [classes for classes, _ in object_targets]
-        target_positions = [points for _, points in object_targets]
+        target_classes = [target[0] for target in object_targets]
+        target_positions = [target[1] for target in object_targets]
 
         matches = self.matcher.forward(
             logits,
@@ -80,14 +84,20 @@ class SceneLoss(nn.Module):
 
         predicted_points = []
         target_points = []
+        predicted_scales, target_scales = [], []
+        predicted_rotations, target_rotations = [], []
 
         # Gather matched positions and replace the labels of matched queries.
         for b, (queries, objects) in enumerate(matches):
-            classes, points = object_targets[b]
+            classes, points, sizes, matrices = object_targets[b]
 
             labels[b, queries] = classes[objects]
             predicted_points.append(positions[b, queries])
             target_points.append(points[objects])
+            predicted_scales.append(scales[b, queries])
+            target_scales.append(sizes[objects])
+            predicted_rotations.append(rotations[b, queries])
+            target_rotations.append(matrices[objects])
 
         # Downweight the final class so unmatched queries do not dominate the
         # classification term.
@@ -110,14 +120,25 @@ class SceneLoss(nn.Module):
                 torch.cat(predicted_points),
                 torch.cat(target_points),
             )
+            object_scale = F.smooth_l1_loss(
+                torch.cat(predicted_scales), torch.cat(target_scales)
+            )
+            object_rotation = geodesic_rotation_loss(
+                rotation_6d_to_matrix(torch.cat(predicted_rotations)),
+                torch.cat(target_rotations),
+            )
         else:
             object_position = positions.sum() * 0
+            object_scale = scales.sum() * 0
+            object_rotation = rotations.sum() * 0
 
         camera_position, camera_rotation = self._camera_losses(pred, targets)
 
         total = (
             self.weights["object_class"] * object_class
             + self.weights["object_position"] * object_position
+            + self.weights["object_scale"] * object_scale
+            + self.weights["object_rotation"] * object_rotation
             + self.weights["camera_position"] * camera_position
             + self.weights["camera_rotation"] * camera_rotation
         )
@@ -126,100 +147,87 @@ class SceneLoss(nn.Module):
             "total": total,
             "object_class": object_class,
             "object_position": object_position,
+            "object_scale": object_scale,
+            "object_rotation": object_rotation,
             "camera_position": camera_position,
             "camera_rotation": camera_rotation,
         }
 
+    def _normalize_targets(self, targets, batch_size):
+        """Convert PyTorch's default-collated targets to one dict per scene."""
+        if not isinstance(targets, dict):
+            return targets
+
+        scenes = []
+
+        for index in range(batch_size):
+            scenes.append({
+                group: {
+                    name: value[index]
+                    for name, value in targets[group].items()
+                }
+                for group in ("objects", "cameras")
+            })
+
+        return scenes
+
     def _object_predictions(self, pred):
-        """Read and validate the object branch returned by SceneModel."""
-        objects = pred.get("objects")
-
-        if not isinstance(objects, dict):
-            raise ValueError("Predictions require an objects dictionary")
-
-        logits = objects.get("class_logits")
-        positions = objects.get("position")
-
-        if not isinstance(logits, torch.Tensor):
-            raise ValueError("Object predictions require a class_logits tensor")
-
-        if not isinstance(positions, torch.Tensor):
-            raise ValueError("Object predictions require a position tensor")
+        """Read the object branch and check its main tensor shapes."""
+        objects = pred["objects"]
+        logits = objects["class_logits"]
+        positions = objects["position"]
+        scales = objects["scale"]
+        rotations = objects["rotation"]
 
         if logits.ndim != 3 or logits.shape[-1] < 2:
             raise ValueError("Object logits must have shape (B, Q, classes + 1)")
 
-        if positions.shape != (*logits.shape[:2], 3):
-            raise ValueError("Object positions must have shape (B, Q, 3)")
+        query_shape = logits.shape[:2]
+        if (
+            positions.shape != (*query_shape, 3)
+            or scales.shape != (*query_shape, 3)
+            or rotations.shape != (*query_shape, 6)
+        ):
+            raise ValueError("Object prediction shapes are incompatible")
 
-        if positions.device != logits.device:
-            raise ValueError("Object predictions must be on the same device")
+        return logits, positions, scales, rotations
 
-        if not logits.is_floating_point() or not positions.is_floating_point():
-            raise ValueError("Object predictions must be floating tensors")
-
-        return logits, positions
-
-    def _object_targets(self, target, logits, positions):
+    def _object_targets(self, target, logits, positions, scales, rotations):
         """Read object targets from generated JSON or a tensor dictionary."""
         objects = target["objects"]
 
         if isinstance(objects, list):
             classes = [obj["class_id"] for obj in objects]
             points = [obj["position"] for obj in objects]
+            sizes = [obj["scale"] for obj in objects]
+            matrices = [obj["rotation_matrix"] for obj in objects]
 
             if not objects:
                 points = positions.new_empty((0, 3))
+                sizes = scales.new_empty((0, 3))
+                matrices = rotations.new_empty((0, 3, 3))
         else:
             classes = objects["classes"]
             points = objects["positions"]
+            sizes = objects["scales"]
+            matrices = objects["rotations"]
 
         classes = torch.as_tensor(classes, device=logits.device)
-        points = torch.as_tensor(
-            points,
-            device=positions.device,
-            dtype=positions.dtype,
-        )
-
-        if classes.ndim != 1 or points.shape != (classes.numel(), 3):
-            raise ValueError(
-                "Target classes and positions must have shapes (N,) and (N, 3)"
-            )
-
-        invalid_class_type = (
-            classes.is_floating_point()
-            or classes.is_complex()
-            or classes.dtype == torch.bool
-        )
-
-        if classes.numel() and invalid_class_type:
-            raise ValueError("Target classes must be integer indices")
-
         classes = classes.long()
+        points = torch.as_tensor(points, device=positions.device, dtype=positions.dtype)
+        sizes = torch.as_tensor(sizes, device=scales.device, dtype=scales.dtype)
+        matrices = torch.as_tensor(matrices, device=rotations.device, dtype=rotations.dtype)
 
-        if classes.numel() and (
-            (classes < 0).any()
-            or (classes >= logits.shape[-1] - 1).any()
-        ):
-            raise ValueError("Target class index is outside the real object classes")
+        if matrices.shape == (classes.numel(), 6):
+            matrices = rotation_6d_to_matrix(matrices)
 
-        return classes, points
+        return classes, points, sizes, matrices
 
     def _camera_losses(self, pred, targets):
         """Compute camera losses while preserving the dataset view order."""
-        cameras = pred.get("cameras")
-
-        if not isinstance(cameras, dict):
-            raise ValueError("Predictions require a cameras dictionary")
-
-        predicted_positions = cameras.get("position")
-        predicted_poses = cameras.get("pose")
-
-        if not isinstance(predicted_positions, torch.Tensor):
-            raise ValueError("Camera predictions require a camera_position tensor")
-
-        if not isinstance(predicted_poses, torch.Tensor):
-            raise ValueError("Camera predictions require a camera_pose tensor")
+        cameras = pred["cameras"]
+        predicted_positions = cameras["position"]
+        predicted_poses = cameras["pose"]
 
         if predicted_positions.ndim != 3 or predicted_positions.shape[-1] != 3:
             raise ValueError("Camera positions must have shape (B, V, 3)")
@@ -227,18 +235,6 @@ class SceneLoss(nn.Module):
         expected_pose_shape = (*predicted_positions.shape[:2], 6)
         if predicted_poses.shape != expected_pose_shape:
             raise ValueError("Camera poses must have shape (B, V, 6)")
-
-        if len(targets) != predicted_positions.shape[0]:
-            raise ValueError("One target scene is required per batch element")
-
-        if predicted_positions.device != predicted_poses.device:
-            raise ValueError("Camera predictions must be on the same device")
-
-        if (
-            not predicted_positions.is_floating_point()
-            or not predicted_poses.is_floating_point()
-        ):
-            raise ValueError("Camera predictions must be floating tensors")
 
         target_positions = []
         target_rotations = []
@@ -302,14 +298,10 @@ class SceneLoss(nn.Module):
                 dtype=predicted_poses.dtype,
             )
 
-            if positions.shape != (n_views, 3):
-                raise ValueError("Target camera positions must have shape (V, 3)")
-
             if rotations.shape == (n_views, 6):
                 rotations = rotation_6d_to_matrix(rotations)
-            elif rotations.shape != (n_views, 3, 3):
-                raise ValueError(
-                    "Target camera rotations must have shape (V, 6) or (V, 3, 3)"
-                )
+
+        if positions.shape != (n_views, 3) or rotations.shape != (n_views, 3, 3):
+            raise ValueError("Target and predicted camera views are incompatible")
 
         return positions, rotations
