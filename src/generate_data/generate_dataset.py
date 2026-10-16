@@ -1,4 +1,4 @@
-"""Generate multi-view scenes with Blender (CLI usage in data/README.md)."""
+"""Generate multi-view scenes with Blender (CLI usage in the adjacent README)."""
 import argparse
 import copy
 import hashlib
@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 import bpy
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 
 CLASS_IDS = {"cube": 0}
@@ -92,22 +92,40 @@ def sample_rotation(rng):
                        math.sqrt(u1) * math.sin(2 * math.pi * u3)))
 
 
+def object_rotation(spec, rng):
+    mode = spec.get("rotation_mode", "uniform")
+    if mode == "uniform":
+        return sample_rotation(rng)
+    if mode == "none":
+        return Quaternion((1, 0, 0, 0))
+    angles = spec.get("rotation_euler_deg", [0, 0, 0])
+    if mode == "euler_ranges":
+        angles = [rng.uniform(*bounds) for bounds in spec["rotation_euler_ranges_deg"]]
+    return Euler(tuple(math.radians(a) for a in angles), "XYZ").to_quaternion()
+
+
 def create_objects(config, rng):
     objects, footprints = [], []
     spec = config["objects"]
-    for index in range(spec["count"]):
+    count = rng.randint(*spec["count_range"]) if "count_range" in spec else spec["count"]
+    for index in range(count):
         kind = rng.choice(spec["types"])
         obj = OBJECT_FACTORIES[kind]()
         obj.name = f"{kind}_{index:03d}"
         obj.rotation_mode = "QUATERNION"
-        obj.rotation_quaternion = sample_rotation(rng)
-        obj.scale = tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
+        obj.rotation_quaternion = object_rotation(spec, rng)
+        obj.scale = tuple(spec["scale"]) if "scale" in spec else tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
         bpy.context.view_layer.update()
         local_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
         radius = max(math.hypot(v.x, v.y) for v in local_corners)
         footprints.append((radius, -min(v.z for v in local_corners)))
-        color = [rng.uniform(0.15, 0.85) for _ in range(3)]
+        color = list(spec["color_rgb"]) if "color_rgb" in spec else [rng.uniform(0.15, 0.85) for _ in range(3)]
         obj.data.materials.append(material(obj.name, color))
+        if "face_colors_rgb" in spec:
+            obj.data.materials.clear()
+            for face, face_color in zip(obj.data.polygons, spec["face_colors_rgb"]):
+                face.material_index = len(obj.data.materials)
+                obj.data.materials.append(material(f"{obj.name}_face_{face.index}", face_color))
         objects.append((kind, obj, color))
     # Restart the entire layout when an early position blocks later objects.
     # Keep geometry fixed so retries do not bias the sampled sizes/rotations.
@@ -130,7 +148,7 @@ def create_objects(config, rng):
         raise ValueError(
             f"Placement impossible après {layout_attempts} dispositions "
             f"({spec['placement_attempts']} essais par objet) : "
-            f"count={spec['count']}, position_extent={spec['position_extent']}, "
+            f"count={count}, position_extent={spec['position_extent']}, "
             f"scale_range={spec['scale_range']}, min_gap={spec['min_gap']}. "
             "Agrandir position_extent ou réduire le nombre/la taille des objets."
         )
@@ -138,15 +156,30 @@ def create_objects(config, rng):
     return objects
 
 
-def create_cameras(spec):
+def create_cameras(spec, rng=None):
+    rng = rng if rng is not None else random.Random()
+    def offset(key):
+        bounds = spec.get(key, [0, 0])
+        return rng.uniform(*bounds) if bounds != [0, 0] else 0.0
+
     cameras = []
     for index, azimuth in enumerate(spec["azimuths_deg"]):
-        angle = math.radians(azimuth)
-        bpy.ops.object.camera_add(location=(spec["radius"]*math.cos(angle),
-                                           spec["radius"]*math.sin(angle), spec["height"]))
+        angle = math.radians(azimuth + offset("azimuth_jitter_deg"))
+        radius = spec["radius"] + offset("radius_jitter")
+        height = spec["height"] + offset("height_jitter")
+        bpy.ops.object.camera_add(location=(radius*math.cos(angle),
+                                           radius*math.sin(angle), height))
         camera = bpy.context.object
         camera.name = f"camera_{index}"
         camera.rotation_euler = (Vector(spec["target"])-camera.location).to_track_quat("-Z", "Y").to_euler()
+        # Local XYZ offsets relative to the look-at orientation; Z is optical roll.
+        angles = [offset(key) for key in
+                  ("pitch_jitter_deg", "yaw_jitter_deg", "roll_jitter_deg")]
+        if any(angles):
+            camera.rotation_euler = (
+                camera.rotation_euler.to_matrix()
+                @ Euler(tuple(math.radians(a) for a in angles), "XYZ").to_matrix()
+            ).to_euler()
         camera.data.type = "PERSP"
         camera.data.lens = spec["lens_mm"]
         camera.data.sensor_width = spec["sensor_width_mm"]
@@ -172,6 +205,12 @@ def ground_truth(scene, objects, cameras, seed, split, index):
                         "rotation_6d": list(rotation_matrix.col[0]) + list(rotation_matrix.col[1]),
                         "object_to_reference": matrix_rows(transform),
                         "object_to_world": matrix_rows(obj.matrix_world)})
+        if len(obj.data.materials) > 1:
+            records[-1]["face_colors"] = [
+                {"polygon_index": face.index, "normal_local": list(face.normal),
+                 "color_rgb": list(obj.data.materials[face.material_index].diffuse_color[:3])}
+                for face in obj.data.polygons
+            ]
     views = []
     for i, camera in enumerate(cameras):
         focal = width * camera.data.lens / camera.data.sensor_width
@@ -193,16 +232,63 @@ def ground_truth(scene, objects, cameras, seed, split, index):
 
 def validate_config(config):
     spec = config["objects"]
-    if spec["count"] < 1 or not spec["types"] or set(spec["types"])-OBJECT_FACTORIES.keys():
+    counts = spec.get("count_range", [spec.get("count"), spec.get("count")])
+    if (not isinstance(counts, (list, tuple)) or len(counts) != 2
+            or any(type(v) is not int or v < 1 for v in counts) or counts[0] > counts[1]):
+        raise ValueError("objects.count ou count_range doit définir des entiers strictement positifs ordonnés.")
+    if not spec["types"] or set(spec["types"])-OBJECT_FACTORIES.keys():
         raise ValueError("Nombre ou types d'objets invalides.")
     if len(spec["scale_range"]) != 2 or not 0 < spec["scale_range"][0] <= spec["scale_range"][1]:
         raise ValueError("scale_range doit contenir deux valeurs positives croissantes.")
-    if spec["position_extent"] <= 0 or spec["min_gap"] < 0 or spec["placement_attempts"] < 1:
+    if spec["position_extent"] < 0 or spec["min_gap"] < 0 or spec["placement_attempts"] < 1:
         raise ValueError("Paramètres de placement invalides.")
+    if spec["position_extent"] == 0 and counts[1] > 1:
+        raise ValueError("position_extent=0 ne permet de placer qu'un seul objet.")
     if not isinstance(spec.get("layout_attempts", 100), int) or spec.get("layout_attempts", 100) < 1:
         raise ValueError("layout_attempts doit être un entier strictement positif.")
-    if len(config["cameras"]["azimuths_deg"]) != 4:
-        raise ValueError("Cette version attend exactement quatre caméras.")
+    mode = spec.get("rotation_mode", "uniform")
+    if mode not in {"uniform", "none", "fixed_euler", "euler_ranges"}:
+        raise ValueError("objects.rotation_mode invalide.")
+    def vector(value, name, positive=False):
+        if (len(value) != 3 or any(not isinstance(v, (int, float)) or
+                not math.isfinite(v) or (positive and v <= 0) for v in value)):
+            raise ValueError(f"{name} doit contenir trois valeurs finies valides.")
+    def bounds(value, name):
+        if (len(value) != 2 or any(not isinstance(v, (int, float)) or
+                not math.isfinite(v) for v in value) or value[0] > value[1]):
+            raise ValueError(f"{name} doit être un intervalle fini ordonné.")
+    if "scale" in spec:
+        vector(spec["scale"], "objects.scale", positive=True)
+    if "color_rgb" in spec:
+        vector(spec["color_rgb"], "objects.color_rgb")
+        if any(v < 0 or v > 1 for v in spec["color_rgb"]):
+            raise ValueError("objects.color_rgb doit être dans [0, 1].")
+    if "face_colors_rgb" in spec:
+        colors = spec["face_colors_rgb"]
+        if set(spec["types"]) != {"cube"} or len(colors) != 6:
+            raise ValueError("objects.face_colors_rgb attend six couleurs pour des cubes uniquement.")
+        for color in colors:
+            vector(color, "objects.face_colors_rgb")
+            if any(v < 0 or v > 1 for v in color):
+                raise ValueError("objects.face_colors_rgb doit être dans [0, 1].")
+        if len({tuple(color) for color in colors}) != 6:
+            raise ValueError("objects.face_colors_rgb attend six couleurs différentes.")
+    vector(spec.get("rotation_euler_deg", [0, 0, 0]), "rotation_euler_deg")
+    if mode == "euler_ranges":
+        ranges = spec.get("rotation_euler_ranges_deg", [])
+        if len(ranges) != 3:
+            raise ValueError("rotation_euler_ranges_deg attend trois intervalles XYZ.")
+        for interval in ranges:
+            bounds(interval, "rotation_euler_ranges_deg")
+    camera_spec = config["cameras"]
+    for key in ("azimuth_jitter_deg", "radius_jitter", "height_jitter",
+                "pitch_jitter_deg", "yaw_jitter_deg", "roll_jitter_deg"):
+        bounds(camera_spec.get(key, [0, 0]), key)
+    if camera_spec["radius"] + camera_spec.get("radius_jitter", [0, 0])[0] <= 0:
+        raise ValueError("Le rayon minimal des caméras doit être positif.")
+    azimuths = camera_spec["azimuths_deg"]
+    if not azimuths or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in azimuths):
+        raise ValueError("cameras.azimuths_deg attend au moins un angle fini.")
     if any(config["cameras"][key] <= 0 for key in ("radius", "lens_mm", "sensor_width_mm")):
         raise ValueError("Paramètres de caméra invalides.")
     resolution = config["render"]["resolution"]
@@ -253,7 +339,7 @@ def main():
             settings = effective[split]
             scene = reset_scene(settings, seed)
             objects = create_objects(settings, random.Random(seed))
-            cameras = create_cameras(settings["cameras"])
+            cameras = create_cameras(settings["cameras"], random.Random(seed ^ 0xCAFE))
             destination = split_dir / f"scene_{index:06d}"
             temporary = Path(tempfile.mkdtemp(prefix=".scene_", dir=split_dir))
             try:

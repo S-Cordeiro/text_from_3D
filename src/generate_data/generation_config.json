@@ -1,22 +1,91 @@
 {
   "seed": 42,
-  "splits": {"train": 6, "val": 2, "test": 2},
-  "render": {"resolution": [224, 224], "samples": 4, "max_bounces": 2},
+  "splits": {
+    "train": 1,
+    "val": 0,
+    "test": 0
+  },
+  "render": {
+    "resolution": [
+      224,
+      224
+    ],
+    "samples": 4,
+    "max_bounces": 2
+  },
   "objects": {
     "count": 2,
-    "types": ["cube"],
-    "scale_range": [0.4, 0.9],
+    "types": [
+      "cube"
+    ],
+    "scale_range": [
+      0.4,
+      0.9
+    ],
     "position_extent": 1.8,
     "min_gap": 0.15,
-    "placement_attempts": 1000
+    "placement_attempts": 1000,
+    "rotation_mode": "uniform",
+    "rotation_euler_deg": [
+      0,
+      0,
+      0
+    ],
+    "rotation_euler_ranges_deg": [
+      [
+        0,
+        0
+      ],
+      [
+        0,
+        0
+      ],
+      [
+        0,
+        0
+      ]
+    ]
   },
   "cameras": {
-    "azimuths_deg": [45, 135, 225, 315],
+    "azimuths_deg": [
+      45,
+      135,
+      225,
+      315
+    ],
     "radius": 8.0,
     "height": 5.0,
-    "target": [0.0, 0.0, 0.7],
+    "target": [
+      0.0,
+      0.0,
+      0.7
+    ],
     "lens_mm": 50.0,
-    "sensor_width_mm": 36.0
+    "sensor_width_mm": 36.0,
+    "azimuth_jitter_deg": [
+      0,
+      0
+    ],
+    "radius_jitter": [
+      0,
+      0
+    ],
+    "height_jitter": [
+      0,
+      0
+    ],
+    "pitch_jitter_deg": [
+      0,
+      0
+    ],
+    "yaw_jitter_deg": [
+      0,
+      0
+    ],
+    "roll_jitter_deg": [
+      0,
+      0
+    ]
   },
   "split_overrides": {}
 }
