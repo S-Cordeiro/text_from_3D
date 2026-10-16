@@ -1,4 +1,6 @@
-bpy
 numpy
 torch
+torchvision
+scipy
 matplotlib
+transformers

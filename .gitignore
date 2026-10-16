@@ -1,2 +1,7 @@
 .venv
+.agents
+.aws
+.codex
 cdc
+__pycache__
+dev
