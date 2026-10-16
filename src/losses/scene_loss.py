@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .geometric_utils import geodesic_rotation_loss, rotation_6d_to_matrix
+from .geometric_utils import geodesic_rotation_loss, matrix_rotation_loss, rotation_6d_to_matrix
 from .matching import HungarianMatcher
 
 
@@ -18,6 +18,8 @@ class SceneLoss(nn.Module):
     Object scale is the local scaling factor, not the object's dimensions.
     Object rotation predictions concatenate the first two rotation columns.
     Scale and rotation supervision use the same class/position assignment.
+    Rotation losses use squared Frobenius distance. Detached ``*_rotation_angle``
+    metrics report geodesic angles in radians and never contribute to ``total``.
     """
 
     def __init__(
@@ -123,16 +125,29 @@ class SceneLoss(nn.Module):
             object_scale = F.smooth_l1_loss(
                 torch.cat(predicted_scales), torch.cat(target_scales)
             )
-            object_rotation = geodesic_rotation_loss(
-                rotation_6d_to_matrix(torch.cat(predicted_rotations)),
-                torch.cat(target_rotations),
-            )
+            predicted_matrices = rotation_6d_to_matrix(torch.cat(predicted_rotations))
+            target_matrices = torch.cat(target_rotations)
+            object_rotation = matrix_rotation_loss(predicted_matrices, target_matrices)
+            with torch.no_grad():
+                object_rotation_angle = geodesic_rotation_loss(predicted_matrices, target_matrices)
         else:
             object_position = positions.sum() * 0
             object_scale = scales.sum() * 0
             object_rotation = rotations.sum() * 0
+            object_rotation_angle = object_rotation.detach()
 
-        camera_position, camera_rotation = self._camera_losses(pred, targets)
+        camera_position, camera_rotation, camera_rotation_angle = self._camera_losses(pred, targets)
+
+        # Target objects without an assigned query count as incorrect. This
+        # measures class accuracy after assignment, not assignment correctness.
+        with torch.no_grad():
+            correct_matches = logits.new_zeros(())
+            for b, (queries, objects) in enumerate(matches):
+                correct_matches += (
+                    logits[b, queries].argmax(-1) == target_classes[b][objects]
+                ).sum()
+            target_count = sum(classes.numel() for classes in target_classes)
+            matching_accuracy = correct_matches / max(target_count, 1)
 
         total = (
             self.weights["object_class"] * object_class
@@ -151,6 +166,9 @@ class SceneLoss(nn.Module):
             "object_rotation": object_rotation,
             "camera_position": camera_position,
             "camera_rotation": camera_rotation,
+            "object_rotation_angle": object_rotation_angle,
+            "camera_rotation_angle": camera_rotation_angle,
+            "matching_accuracy": matching_accuracy,
         }
 
     def _normalize_targets(self, targets, batch_size):
@@ -258,12 +276,14 @@ class SceneLoss(nn.Module):
         )
 
         predicted_rotations = rotation_6d_to_matrix(predicted_poses)
-        camera_rotation = geodesic_rotation_loss(
+        camera_rotation = matrix_rotation_loss(
             predicted_rotations,
             target_rotations,
         )
 
-        return camera_position, camera_rotation
+        with torch.no_grad():
+            camera_rotation_angle = geodesic_rotation_loss(predicted_rotations, target_rotations)
+        return camera_position, camera_rotation, camera_rotation_angle
 
     def _camera_targets(self, target, predicted_positions, predicted_poses):
         """Read camera targets from generated JSON or a tensor dictionary."""

@@ -17,6 +17,11 @@ def rotation_6d_to_matrix(rotation_6d):
     return torch.stack((first, second, third), dim=-1)
 
 
+def matrix_rotation_loss(predicted, target):
+    """Squared Frobenius distance, averaged over rotations (not coefficients)."""
+    return (predicted - target).square().sum(dim=(-1, -2)).mean()
+
+
 def geodesic_rotation_loss(predicted, target):
     """Return the mean relative rotation angle in radians."""
     relative = predicted.transpose(-1, -2) @ target

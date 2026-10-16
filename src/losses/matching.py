@@ -21,11 +21,6 @@ class HungarianMatcher:
     @torch.no_grad()
     def forward(self, logits, positions, target_classes, target_positions):
         """Return matched query and target indices for every batch element."""
-        batch_size = logits.shape[0]
-
-        if len(target_classes) != batch_size or len(target_positions) != batch_size:
-            raise ValueError("One set of object targets is required per batch element")
-
         matches = []
 
         # Each scene is matched independently because it may contain a
