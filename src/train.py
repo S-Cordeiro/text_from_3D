@@ -19,6 +19,16 @@ from src.model.config import SceneModelConfig
 from src.model.model import SceneModel
 
 
+def predict(model, images, device):
+    """Run the model in bf16 and keep geometry losses in float32."""
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        predictions = model(images.to(device))
+    return {
+        group: {name: value.float() for name, value in values.items()}
+        for group, values in predictions.items()
+    }
+
+
 def format_metrics(metrics):
     return (
         f"loss={metrics['total']:.4f}\n"
@@ -47,7 +57,7 @@ def evaluate(model, scene_loss, loader, device, by_count=False):
         for batch in loader:
             if by_count and len(batch['targets']) != 1:
                 raise ValueError('Grouped evaluation requires batch_size=1')
-            metrics = scene_loss(model(batch['images'].to(device)), batch['targets'])
+            metrics = scene_loss(predict(model, batch['images'], device), batch['targets'])
             scene_count = len(batch['targets'])
             object_count = sum(t['objects']['classes'].numel() for t in batch['targets'])
             if by_count:
@@ -127,6 +137,8 @@ def main():
     parser.add_argument('--eval-every', type=int, default=100)
     parser.add_argument('--log-every', type=int, default=5)
     parser.add_argument('--runs-dir', default='runs')
+    parser.add_argument('--no-checkpoints', action='store_true',
+                        help='Keep logs and metrics without saving model or optimizer states')
     parser.add_argument('--extra-val-dataset', help='Additional dataset root containing a val split')
     args = parser.parse_args()
     if min(args.epochs, args.eval_every, args.log_every) < 1:
@@ -149,7 +161,7 @@ def main():
     if not len(train_dataset) or not len(val_dataset):
         raise ValueError('The train and val splits must both contain at least one scene')
 
-    train_loader = DataLoader(train_dataset, batch_size=1, collate_fn=collate_scenes)
+    train_loader = DataLoader(train_dataset, batch_size=8, collate_fn=collate_scenes, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=1, collate_fn=collate_scenes)
     validation_loaders = {'val': val_loader}
     if args.extra_val_dataset:
@@ -161,6 +173,8 @@ def main():
         )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda' and not torch.cuda.is_bf16_supported():
+        raise RuntimeError('This CUDA device does not support bf16 mixed precision')
     run_dir = create_run_directory(args.runs_dir)
     logger = logging.getLogger('training')
     logger.setLevel(logging.INFO)
@@ -184,11 +198,15 @@ def main():
         'optimizer': {'name': 'AdamW', 'lr': args.lr},
         'batch_size': 1,
         'device': str(device),
+        'compile': True,
+        'mixed_precision': 'bf16',
         'started_at': datetime.now(timezone.utc).isoformat(),
     }
     logger.info('Run: %s | Device: %s', run_dir, device)
 
     model = SceneModel(model_config).to(device)
+    # Compile in place so checkpoints retain the original state_dict keys.
+    model.compile()
     scene_loss = SceneLoss().to(device)
     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
 
@@ -214,7 +232,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         for batch_idx, batch in enumerate(train_loader, start=1):
             optimizer.zero_grad()
-            pred = model(batch['images'].to(device))
+            pred = predict(model, batch['images'], device)
             losses = scene_loss(pred, batch['targets'])
             losses['total'].backward()
             optimizer.step()
@@ -246,15 +264,19 @@ def main():
                         validation_metrics = overall
                 if validation_metrics['total'] < best_loss:
                     best_loss = validation_metrics['total']
-                    save_checkpoint(run_dir / 'best.pt', model, optimizer, epoch, step,
+                    if not args.no_checkpoints:
+                        save_checkpoint(run_dir / 'best.pt', model, optimizer, epoch, step,
+                                        best_loss, run_config, validation_metrics)
+                if not args.no_checkpoints:
+                    save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
                                     best_loss, run_config, validation_metrics)
-                save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
-                                best_loss, run_config, validation_metrics)
 
         # Also preserve the latest training state at every epoch boundary.
-        save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
-                        best_loss, run_config, validation_metrics)
-    logger.info('Training complete. Checkpoints saved in %s', run_dir)
+        if not args.no_checkpoints:
+            save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
+                            best_loss, run_config, validation_metrics)
+    logger.info('Training complete. Results saved in %s | Checkpoints: %s',
+                run_dir, 'disabled' if args.no_checkpoints else 'enabled')
 
 
 if __name__ == '__main__':
