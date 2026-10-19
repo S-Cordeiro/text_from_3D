@@ -1,8 +1,8 @@
 {
   "seed": 42,
   "splits": {
-    "train": 1000,
-    "val": 100,
+    "train": 5000,
+    "val": 500,
     "test": 100
   },
   "render": {
