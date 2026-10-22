@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from transformers import AutoImageProcessor
 
@@ -111,10 +112,11 @@ def create_run_directory(root):
             number += 1
 
 
-def save_checkpoint(path, model, optimizer, epoch, step, best_loss, config, metrics):
+def save_checkpoint(path, model, optimizer, epoch, step, best_loss, config, metrics, scheduler):
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
         'step': step,
         'best_val_loss': best_loss,
@@ -133,7 +135,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', default='dataset_single_cube')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--eval-every', type=int, default=100)
     parser.add_argument('--log-every', type=int, default=5)
     parser.add_argument('--runs-dir', default='runs')
@@ -143,8 +144,6 @@ def main():
     args = parser.parse_args()
     if min(args.epochs, args.eval_every, args.log_every) < 1:
         parser.error('epochs, eval-every and log-every must be positive')
-    if not math.isfinite(args.lr) or args.lr <= 0:
-        parser.error('lr must be finite and positive')
 
 
     processor = AutoImageProcessor.from_pretrained('facebook/dinov2-small')
@@ -161,7 +160,10 @@ def main():
     if not len(train_dataset) or not len(val_dataset):
         raise ValueError('The train and val splits must both contain at least one scene')
 
-    train_loader = DataLoader(train_dataset, batch_size=8, collate_fn=collate_scenes, num_workers=4)
+    train_loader = DataLoader(
+        train_dataset, batch_size=16, shuffle=True,
+        collate_fn=collate_scenes, num_workers=4,
+    )
     val_loader = DataLoader(val_dataset, batch_size=1, collate_fn=collate_scenes)
     validation_loaders = {'val': val_loader}
     if args.extra_val_dataset:
@@ -182,6 +184,9 @@ def main():
     logger.addHandler(logging.StreamHandler())
     logger.addHandler(logging.FileHandler(run_dir / 'train.log', encoding='utf-8'))
     model_config = SceneModelConfig()
+    lr_max, lr_min = 1e-4, 3e-6
+    warmup_steps = 750
+    total_steps = args.epochs * len(train_loader)
     run_config = {
         'arguments': vars(args),
         'model': asdict(model_config),
@@ -195,8 +200,16 @@ def main():
         },
         'checkpoint_selection_split': 'val',
         'processor': 'facebook/dinov2-small',
-        'optimizer': {'name': 'AdamW', 'lr': args.lr},
-        'batch_size': 1,
+        'optimizer': {'name': 'AdamW', 'lr': lr_max},
+        'scheduler': {
+            'name': 'SequentialLR (LinearLR + CosineAnnealingLR)',
+            'warmup_steps': warmup_steps,
+            'total_steps': total_steps,
+            'lr_max': lr_max,
+            'lr_min': lr_min,
+            'warmup_start_lr': lr_max / warmup_steps,
+        },
+        'batch_size': train_loader.batch_size,
         'device': str(device),
         'compile': True,
         'mixed_precision': 'bf16',
@@ -208,7 +221,17 @@ def main():
     # Compile in place so checkpoints retain the original state_dict keys.
     model.compile()
     scene_loss = SceneLoss().to(device)
-    optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr_max)
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[
+            LinearLR(optimizer, start_factor=1 / warmup_steps, total_iters=warmup_steps),
+            CosineAnnealingLR(
+                optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=lr_min,
+            ),
+        ],
+        milestones=[warmup_steps],
+    )
 
     run_config['loss'] = {
         'weights': scene_loss.weights,
@@ -235,15 +258,19 @@ def main():
             pred = predict(model, batch['images'], device)
             losses = scene_loss(pred, batch['targets'])
             losses['total'].backward()
+            learning_rate = optimizer.param_groups[0]['lr']
             optimizer.step()
+            scheduler.step()
             step += 1
 
             metrics = {name: value.detach().item() for name, value in losses.items()}
+            metrics['lr'] = learning_rate
             record_metrics('train', epoch, step, metrics)
             if step % args.log_every == 0:
                 logger.info(
                     f'[TRAIN] epoch {epoch}/{args.epochs}'
                     f' | batch {batch_idx}/{len(train_loader)} | step {step}'
+                    f' | lr={learning_rate:.6g}'
                     f" | {format_metrics(metrics)}",
                 )
             is_final_step = epoch == args.epochs and batch_idx == len(train_loader)
@@ -266,15 +293,15 @@ def main():
                     best_loss = validation_metrics['total']
                     if not args.no_checkpoints:
                         save_checkpoint(run_dir / 'best.pt', model, optimizer, epoch, step,
-                                        best_loss, run_config, validation_metrics)
+                                        best_loss, run_config, validation_metrics, scheduler)
                 if not args.no_checkpoints:
                     save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
-                                    best_loss, run_config, validation_metrics)
+                                    best_loss, run_config, validation_metrics, scheduler)
 
         # Also preserve the latest training state at every epoch boundary.
         if not args.no_checkpoints:
             save_checkpoint(run_dir / 'last.pt', model, optimizer, epoch, step,
-                            best_loss, run_config, validation_metrics)
+                            best_loss, run_config, validation_metrics, scheduler)
     logger.info('Training complete. Results saved in %s | Checkpoints: %s',
                 run_dir, 'disabled' if args.no_checkpoints else 'enabled')
 
