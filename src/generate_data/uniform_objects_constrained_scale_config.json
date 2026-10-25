@@ -1,0 +1,88 @@
+{
+  "seed": 42,
+  "splits": {
+    "train": 10,
+    "val": 0,
+    "test": 0
+  },
+  "render": {
+    "resolution": [
+      224,
+      224
+    ],
+    "samples": 32,
+    "max_bounces": 2
+  },
+  "objects": {
+    "count_range": [
+      2,
+      4
+    ],
+    "types": [
+      "cube",
+      "sphere",
+      "cylinder"
+    ],
+    "scale_range": [
+      0.35,
+      0.7
+    ],
+    "rotation_mode": "uniform",
+    "position_extent": 3.0,
+    "min_gap": 0.15,
+    "placement_attempts": 1000,
+    "layout_attempts": 100,
+    "scale_ranges_by_type": {
+      "sphere": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "cylinder": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0.35,
+          0.7
+        ]
+      ]
+    }
+  },
+  "cameras": {
+    "azimuths_deg": [
+      0,
+      45,
+      90,
+      135,
+      180,
+      225,
+      270,
+      315
+    ],
+    "radius": 15.0,
+    "height": 10.0,
+    "target": [
+      0.0,
+      0.0,
+      0.7
+    ],
+    "lens_mm": 40.0,
+    "sensor_width_mm": 36.0
+  },
+  "split_overrides": {}
+}

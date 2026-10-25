@@ -57,8 +57,8 @@ To add a primitive, extend `OBJECT_FACTORIES` and `CLASS_IDS`, then update `obje
 
 Both presets retain the six distinct face colors, fixed cubic scale, random
 positions/rotations, and eight cameras of `single_cube_config.json`.
-Each produces 1,000 training scenes, 100 validation scenes, and 100 test scenes
-(9,600 PNG images).
+Each produces 5,000 training scenes, 500 validation scenes, and 100 test scenes
+(44,800 PNG images).
 
 | Configuration | Train objects per scene | Val/test objects per scene |
 | --- | --- | --- |
@@ -76,6 +76,55 @@ its seed. This does not enforce an exact balance across counts. Split overrides
 set the validation/test range separately.
 
 ## Ground truth
+
+### Uniform-color cubes, spheres/ellipsoids and cylinders
+
+From the repository root:
+
+```bash
+blender --background --python-exit-code 1 --python src/generate_data/generate_dataset.py -- --config src/generate_data/uniform_objects_config.json --output dataset_uniform_objects
+```
+
+This preset produces **80 PNG images**: 10 training scenes with eight
+views each, spaced 45° apart as in `two_cubes_config.json`, at 224 × 224.
+Each scene contains 2–4 objects (uniformly sampled,
+inclusive); each object's type is sampled independently from `cube`, `sphere`,
+and `cylinder`. All three types need not occur in every scene. Each object has
+one random, uniform material color, a random SO(3) rotation, and independent
+XYZ scales in [0.35, 0.7]. Spheres therefore become ellipsoids; cylinders may
+have elliptical sections. Base primitives span 2 units on each local axis.
+The exported class IDs are cube=0, sphere=1, cylinder=2. Curved primitives use
+64 segments, with 32 rings for spheres. Objects touch the ground at their
+lowest mesh vertex; enclosing disks keep them apart. Lighting still creates
+shading on the uniform materials.
+
+Models configured for a fixed number of views/classes must use eight views
+and three object classes for this preset.
+
+#### Spheres without scaling and cylinders with axial scaling only
+
+`uniform_objects_constrained_scale_config.json` retains 2–4 objects and eight
+views per scene. Spheres use scale `[1, 1, 1]` (radius 1); cylinders use scale
+`[1, 1, z]`, with z sampled in [0.35, 0.7] (radius 1, height 0.7–1.4).
+The cylinder axis is its **local Z**, before the random object rotation.
+Cubes retain independent XYZ scales in [0.35, 0.7]. Placement extent and camera
+distance are increased to accommodate the larger spheres and cylinders.
+
+```bash
+blender --background --python-exit-code 1 --python src/generate_data/generate_dataset.py -- --config src/generate_data/uniform_objects_constrained_scale_config.json --train 10 --val 2 --test 2 --output dataset_constrained_scale
+```
+
+`objects.scale_ranges_by_type` maps primitive names to three positive intervals
+in local XYZ order. These override `objects.scale` and `objects.scale_range`
+for that type; absent types retain the shared scale settings. Equal interval
+endpoints fix an axis, for example:
+
+```json
+"scale_ranges_by_type": {
+  "sphere": [[1, 1], [1, 1], [1, 1]],
+  "cylinder": [[1, 1], [1, 1], [0.35, 0.7]]
+}
+```
 
 ### Ten scenes with one multicolored cube
 

@@ -14,7 +14,7 @@ import bpy
 from mathutils import Euler, Matrix, Quaternion, Vector
 
 
-CLASS_IDS = {"cube": 0}
+CLASS_IDS = {"cube": 0, "sphere": 1, "cylinder": 2}
 
 
 def create_cube():
@@ -23,7 +23,27 @@ def create_cube():
     return bpy.context.object
 
 
-OBJECT_FACTORIES = {"cube": create_cube}
+def create_sphere():
+    # Unit radius; independent XYZ scaling also produces ellipsoids.
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=32, radius=1)
+    obj = bpy.context.object
+    for face in obj.data.polygons:
+        face.use_smooth = True
+    return obj
+
+
+def create_cylinder():
+    # Unit radius and height 2, aligned with local Z before rotation.
+    bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=1, depth=2)
+    obj = bpy.context.object
+    for face in obj.data.polygons:
+        # Smooth the sides, keeping the two caps flat.
+        face.use_smooth = len(face.vertices) == 4
+    return obj
+
+
+OBJECT_FACTORIES = {"cube": create_cube, "sphere": create_sphere,
+                    "cylinder": create_cylinder}
 
 
 def merge_config(base, overrides):
@@ -114,11 +134,18 @@ def create_objects(config, rng):
         obj.name = f"{kind}_{index:03d}"
         obj.rotation_mode = "QUATERNION"
         obj.rotation_quaternion = object_rotation(spec, rng)
-        obj.scale = tuple(spec["scale"]) if "scale" in spec else tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
+        scale_ranges = spec.get("scale_ranges_by_type", {}).get(kind)
+        if scale_ranges is not None:
+            obj.scale = tuple(rng.uniform(*interval) for interval in scale_ranges)
+        else:
+            obj.scale = tuple(spec["scale"]) if "scale" in spec else tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
         bpy.context.view_layer.update()
         local_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
         radius = max(math.hypot(v.x, v.y) for v in local_corners)
-        footprints.append((radius, -min(v.z for v in local_corners)))
+        # Bounding-box disks conservatively prevent intersections. Use actual
+        # mesh vertices for ground contact of curved, rotated primitives.
+        min_z = min((obj.matrix_world @ v.co).z for v in obj.data.vertices)
+        footprints.append((radius, -min_z))
         color = list(spec["color_rgb"]) if "color_rgb" in spec else [rng.uniform(0.15, 0.85) for _ in range(3)]
         obj.data.materials.append(material(obj.name, color))
         if "face_colors_rgb" in spec:
@@ -259,6 +286,16 @@ def validate_config(config):
             raise ValueError(f"{name} doit être un intervalle fini ordonné.")
     if "scale" in spec:
         vector(spec["scale"], "objects.scale", positive=True)
+    per_type = spec.get("scale_ranges_by_type", {})
+    if not isinstance(per_type, dict) or set(per_type) - OBJECT_FACTORIES.keys():
+        raise ValueError("objects.scale_ranges_by_type doit associer des types connus à des intervalles XYZ.")
+    for kind, ranges in per_type.items():
+        if not isinstance(ranges, (list, tuple)) or len(ranges) != 3:
+            raise ValueError(f"scale_ranges_by_type.{kind} attend trois intervalles XYZ.")
+        for interval in ranges:
+            bounds(interval, f"scale_ranges_by_type.{kind}")
+            if interval[0] <= 0:
+                raise ValueError("Les scales par type doivent être strictement positifs.")
     if "color_rgb" in spec:
         vector(spec["color_rgb"], "objects.color_rgb")
         if any(v < 0 or v > 1 for v in spec["color_rgb"]):
