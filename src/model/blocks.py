@@ -87,15 +87,16 @@ class MLP(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    def __init__(self, d_model, n_head):
+    def __init__(self, d_model, n_head, dropout=0.1):
         super().__init__()
         self.ln_1 = nn.LayerNorm(d_model)
         self.attn = SelfAttention(d_model, n_head)
         self.ln_2 = nn.LayerNorm(d_model)
         self.mlp = MLP(d_model)
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.dropout(self.attn(self.ln_1(x)))
+        x = x + self.dropout(self.mlp(self.ln_2(x)))
         
         return x

@@ -4,7 +4,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .geometric_utils import geodesic_rotation_loss, matrix_rotation_loss, rotation_6d_to_matrix
+from .geometric_utils import (
+    geodesic_rotation_loss,
+    matrix_rotation_loss,
+    object_rotation_angle,
+    object_rotation_loss,
+    object_scale_loss,
+    rotation_6d_to_matrix,
+)
 from .matching import HungarianMatcher
 
 
@@ -18,8 +25,13 @@ class SceneLoss(nn.Module):
     Object scale is the local scaling factor, not the object's dimensions.
     Object rotation predictions concatenate the first two rotation columns.
     Scale and rotation supervision use the same class/position assignment.
-    Rotation losses use squared Frobenius distance. Detached ``*_rotation_angle``
+    Object losses use matched target classes: spheres ignore scale/rotation;
+    cylinders supervise local Z scale and their unoriented symmetry axis.
+    Cubes minimize squared Frobenius distance over their 24 rotation symmetries;
+    cameras use squared Frobenius rotation distance directly.
+    Detached ``*_rotation_angle``
     metrics report geodesic angles in radians and never contribute to ``total``.
+    Object angles minimize over symmetries and exclude spheres from the mean.
     """
 
     def __init__(
@@ -88,6 +100,7 @@ class SceneLoss(nn.Module):
         target_points = []
         predicted_scales, target_scales = [], []
         predicted_rotations, target_rotations = [], []
+        matched_classes = []
 
         # Gather matched positions and replace the labels of matched queries.
         for b, (queries, objects) in enumerate(matches):
@@ -100,6 +113,7 @@ class SceneLoss(nn.Module):
             target_scales.append(sizes[objects])
             predicted_rotations.append(rotations[b, queries])
             target_rotations.append(matrices[objects])
+            matched_classes.append(classes[objects])
 
         # Downweight the final class so unmatched queries do not dominate the
         # classification term.
@@ -122,19 +136,20 @@ class SceneLoss(nn.Module):
                 torch.cat(predicted_points),
                 torch.cat(target_points),
             )
-            object_scale = F.smooth_l1_loss(
-                torch.cat(predicted_scales), torch.cat(target_scales)
+            classes = torch.cat(matched_classes)
+            object_scale = object_scale_loss(
+                torch.cat(predicted_scales), torch.cat(target_scales), classes
             )
             predicted_matrices = rotation_6d_to_matrix(torch.cat(predicted_rotations))
             target_matrices = torch.cat(target_rotations)
-            object_rotation = matrix_rotation_loss(predicted_matrices, target_matrices)
+            object_rotation = object_rotation_loss(predicted_matrices, target_matrices, classes)
             with torch.no_grad():
-                object_rotation_angle = geodesic_rotation_loss(predicted_matrices, target_matrices)
+                rotation_angle = object_rotation_angle(predicted_matrices, target_matrices, classes)
         else:
             object_position = positions.sum() * 0
             object_scale = scales.sum() * 0
             object_rotation = rotations.sum() * 0
-            object_rotation_angle = object_rotation.detach()
+            rotation_angle = object_rotation.detach()
 
         camera_position, camera_rotation, camera_rotation_angle = self._camera_losses(pred, targets)
 
@@ -166,7 +181,7 @@ class SceneLoss(nn.Module):
             "object_rotation": object_rotation,
             "camera_position": camera_position,
             "camera_rotation": camera_rotation,
-            "object_rotation_angle": object_rotation_angle,
+            "object_rotation_angle": rotation_angle,
             "camera_rotation_angle": camera_rotation_angle,
             "matching_accuracy": matching_accuracy,
         }

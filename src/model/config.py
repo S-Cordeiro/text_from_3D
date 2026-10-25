@@ -3,22 +3,25 @@ from dataclasses import dataclass, field
 @dataclass
 class MultiViewConfig:
     n_head : int = 4
-    n_layers : int = 8
+    n_layers : int = 4
 
     n_cameras : int = 8
     max_tokens_per_view : int = 256  # 16 x 16 patches, independent of d_model
+    dropout : float = 0.1
 
 @dataclass
 class ObjectDecoderConfig:
     n_head : int = 4
-    n_layers : int = 4
+    n_layers : int = 2
 
     n_objects : int = 5
+    dropout : float = 0.1
 
 @dataclass
 class CameraDecoderConfig:
     n_head : int = 4
-    n_layers : int = 4
+    n_layers : int = 1
+    dropout : float = 0.1
 
 @dataclass 
 class SceneModelConfig:

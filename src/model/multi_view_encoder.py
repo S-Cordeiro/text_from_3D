@@ -11,7 +11,8 @@ class MultiViewEncoder(nn.Module):
         self.camera_emb = nn.Embedding(self.mvconfig.n_cameras, config.d_model)
         self.positional_emb = nn.Embedding(self.mvconfig.max_tokens_per_view, config.d_model)
         self.blocks = nn.ModuleList([
-            AttentionBlock(config.d_model, self.mvconfig.n_head) for _ in range(self.mvconfig.n_layers)
+            AttentionBlock(config.d_model, self.mvconfig.n_head, self.mvconfig.dropout)
+            for _ in range(self.mvconfig.n_layers)
         ])
 
     def forward(self, x):

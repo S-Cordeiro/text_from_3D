@@ -20,21 +20,22 @@ class ObjectDecoderBlock(nn.Module):
         self.ln_3 = nn.LayerNorm(config.d_model)
 
         self.ffwd = MLP(config.d_model)
+        self.dropout = nn.Dropout(self.odconfig.dropout)
 
     def forward(self, queries, visual_tokens):
 
         x = self.ln_1(queries)
         attn = self.self_attn(x)
-        queries = queries + attn
+        queries = queries + self.dropout(attn)
 
         x = self.ln_2(queries)
         attn = self.cross_attn(x, visual_tokens)
 
-        queries = queries + attn
+        queries = queries + self.dropout(attn)
 
-        queries = queries + self.ffwd(
+        queries = queries + self.dropout(self.ffwd(
             self.ln_3(queries)
-        )
+        ))
 
         return queries
 
