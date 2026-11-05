@@ -1,0 +1,40 @@
+import torch
+import torch.nn as nn
+from ..blocks import SelfAttention, AttentionBlock
+
+class MultiViewEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.mvconfig = config.multiview
+
+        self.camera_emb = nn.Embedding(self.mvconfig.n_cameras, config.d_model)
+        self.positional_emb = nn.Embedding(self.mvconfig.max_tokens_per_view, config.d_model)
+        self.blocks = nn.ModuleList([
+            AttentionBlock(config.d_model, self.mvconfig.n_head, self.mvconfig.dropout)
+            for _ in range(self.mvconfig.n_layers)
+        ])
+
+    def forward(self, x):
+        B, V, T, C = x.shape # B = batch, V = num of views, T = length of sequence (16*16), C = d_model
+
+        if T > self.positional_emb.num_embeddings:
+            raise ValueError(
+                f"Received {T} tokens per view, but multiview.max_tokens_per_view "
+                f"is {self.positional_emb.num_embeddings}. Increase it for larger images."
+            )
+
+        camera_pos = torch.arange(0, self.mvconfig.n_cameras, dtype=torch.long, device=x.device)
+        cam_emb = self.camera_emb(camera_pos) # (n_cameras, d_model)
+        x = x + cam_emb[None, :, None, :]
+
+        pos = torch.arange(0, T, dtype=torch.long, device=x.device)
+        pos_emb = self.positional_emb(pos) # (T, d_model)
+        x = x + pos_emb[None, None, :, :]
+
+        x = x.reshape(B, V*T, C)
+
+        for block in self.blocks:
+            x = block(x)
+
+        return x

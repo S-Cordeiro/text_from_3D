@@ -9,8 +9,8 @@ import sys
 import os
 
 from src.dataset.scene_dataset import SceneDataset
-from src.model.model import SceneModel
-from src.model.config import SceneModelConfig
+from src.models.vision.model import SceneModel
+from src.models.vision.config import SceneModelConfig
 from src.losses.scene_loss import SceneLoss
 
 # ----------------------------

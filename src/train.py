@@ -16,8 +16,8 @@ from transformers import AutoImageProcessor
 
 from src.dataset.scene_dataset import SceneDataset, collate_scenes
 from src.losses.scene_loss import SceneLoss
-from src.model.config import SceneModelConfig
-from src.model.model import SceneModel
+from src.models.vision.config import SceneModelConfig
+from src.models.vision.model import SceneModel
 
 
 def predict(model, images, device):
