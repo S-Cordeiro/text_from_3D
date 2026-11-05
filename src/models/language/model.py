@@ -5,14 +5,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from ..blocks import AttentionBlock
+from ..blocks import AttentionBlock, SwiGLU
 from .config import GPTConfig
 
 
 class Block(AttentionBlock):
     def __init__(self, config):
         super().__init__(config.n_embd, config.n_head, config.dropout,
-                         is_causal=True, approximate='tanh')
+                         is_causal=True, feedforward=SwiGLU(config.n_embd))
         self.attn.c_proj.NANOGPT_SCALE_INIT = 1
         self.mlp.c_proj.NANOGPT_SCALE_INIT = 1
 

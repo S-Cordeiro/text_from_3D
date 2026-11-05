@@ -6,6 +6,10 @@ Architecture GPT inspirée de [build-nanogpt](https://github.com/karpathy/build-
 Il part de poids aléatoires ; aucun poids préentraîné n'est téléchargé.
 Les blocs pré-normalisés réutilisent `src/models/blocks.py`, avec attention
 causale pour le langage et attention bidirectionnelle pour la vision.
+Le LLM utilise un feedforward SwiGLU sans biais :
+`c_proj(silu(c_gate(x)) * c_fc(x))`, de dimension cachée `8 * n_embd // 3`,
+pour un nombre de paramètres proche du MLP GELU initial. Ce changement rend
+les anciens checkpoints GELU incompatibles avec cette architecture.
 Les embeddings de tokens et la tête de sortie partagent leurs poids.
 
 ## Préparer les données

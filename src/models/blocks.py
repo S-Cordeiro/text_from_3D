@@ -87,13 +87,31 @@ class MLP(nn.Module):
         return x
 
 
+class SwiGLU(nn.Module):
+    """Gated feedforward: project SiLU(gate(x)) * value(x) back to d_model."""
+
+    def __init__(self, d_model, hidden_dim=None):
+        super().__init__()
+        # Three projections instead of two: 8/3 keeps the parameter count
+        # close to a standard MLP with a 4*d_model hidden dimension.
+        hidden_dim = hidden_dim if hidden_dim is not None else 8 * d_model // 3
+        if d_model <= 0 or hidden_dim <= 0:
+            raise ValueError('d_model and hidden_dim must be positive')
+        self.c_gate = nn.Linear(d_model, hidden_dim, bias=False)
+        self.c_fc = nn.Linear(d_model, hidden_dim, bias=False)
+        self.c_proj = nn.Linear(hidden_dim, d_model, bias=False)
+
+    def forward(self, x):
+        return self.c_proj(F.silu(self.c_gate(x)) * self.c_fc(x))
+
+
 class AttentionBlock(nn.Module):
-    def __init__(self, d_model, n_head, dropout=0.1, is_causal=False, approximate="none"):
+    def __init__(self, d_model, n_head, dropout=0.1, is_causal=False, approximate="none", feedforward=None):
         super().__init__()
         self.ln_1 = nn.LayerNorm(d_model)
         self.attn = SelfAttention(d_model, n_head, is_causal=is_causal)
         self.ln_2 = nn.LayerNorm(d_model)
-        self.mlp = MLP(d_model, approximate=approximate)
+        self.mlp = feedforward if feedforward is not None else MLP(d_model, approximate=approximate)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
