@@ -4,3 +4,4 @@ torchvision
 scipy
 matplotlib
 transformers
+tiktoken
