@@ -43,13 +43,14 @@ class CrossAttention(nn.Module):
 
 class SelfAttention(nn.Module):
 
-    def __init__(self, d_model, n_head):
+    def __init__(self, d_model, n_head, is_causal=False):
         super().__init__()
         assert d_model % n_head == 0
         self.d_model = d_model
         self.n_head = n_head
         self.head_dim = d_model // n_head
 
+        self.is_causal = is_causal
         self.c_attn = nn.Linear(d_model, 3 * d_model)
         self.c_proj = nn.Linear(d_model, d_model)
 
@@ -65,7 +66,7 @@ class SelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        y = F.scaled_dot_product_attention(q, k, v)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=self.is_causal)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         out = self.c_proj(y)
 
@@ -73,10 +74,10 @@ class SelfAttention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model, approximate="none"):
         super().__init__()
         self.c_fc = nn.Linear(d_model, d_model*4)
-        self.gelu = nn.GELU()
+        self.gelu = nn.GELU(approximate=approximate)
         self.c_proj = nn.Linear(d_model*4, d_model)
 
     def forward(self, x):
@@ -87,12 +88,12 @@ class MLP(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    def __init__(self, d_model, n_head, dropout=0.1):
+    def __init__(self, d_model, n_head, dropout=0.1, is_causal=False, approximate="none"):
         super().__init__()
         self.ln_1 = nn.LayerNorm(d_model)
-        self.attn = SelfAttention(d_model, n_head)
+        self.attn = SelfAttention(d_model, n_head, is_causal=is_causal)
         self.ln_2 = nn.LayerNorm(d_model)
-        self.mlp = MLP(d_model)
+        self.mlp = MLP(d_model, approximate=approximate)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
