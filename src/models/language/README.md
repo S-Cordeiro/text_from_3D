@@ -70,5 +70,5 @@ print(tokenizer.decode(tokens[0].tolist()))
 
 La génération garde les `block_size` derniers tokens quand le contexte est plein.
 Il n'y a pas encore de cache KV ni de connexion à la vision : l'intégration VLM
-viendra ensuite. Les anciens imports `src.model.*` restent disponibles pour les
-notebooks ; les modèles de vision vivent désormais dans `src/models/vision/`.
+viendra ensuite. Les modèles de vision vivent dans `src/models/vision/` ;
+les imports doivent utiliser `src.models.vision.*`.

@@ -185,13 +185,3 @@ Large offsets may move objects out of frame. All options support split_overrides
 Object rotation settings use world coordinates. Targets are recomputed relative
 to the actual camera 0, so rotation_mode: none does not mean an identity target.
 Camera 0's relative pose remains identity, even when its world pose varies.
-
-## Cheap rotation diagnostics
-
-Run `.venv/bin/python tests/diagnose_rotations.py --dataset dataset_preview`.
-This CPU-only script reads training JSON files, injects exact/known rotations
-through SceneLoss, and optimizes free 6D vectors with three initializations.
-It does not render or load images or the visual backbone.
-
-For the full time-limited diagnostic suite, see
-[`tests/ROTATION_DIAGNOSTICS.md`](../../tests/ROTATION_DIAGNOSTICS.md).
