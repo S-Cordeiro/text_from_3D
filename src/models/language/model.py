@@ -18,6 +18,18 @@ class Block(AttentionBlock):
 
 
 class GPT(nn.Module):
+    @classmethod
+    def from_checkpoint(cls, path, device='cpu'):
+        """Load configuration and weights from a training checkpoint, in eval mode.
+
+        Optimizer, RNG and data-loader state are not restored; use --resume
+        in train_language.py to continue an interrupted training run.
+        """
+        checkpoint = torch.load(path, map_location='cpu', weights_only=True)
+        model = cls(GPTConfig(**checkpoint['config']))
+        model.load_state_dict(checkpoint['model'])
+        return model.to(device).eval()
+
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.config = config

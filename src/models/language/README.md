@@ -59,13 +59,10 @@ Le script ne propose pas encore de reprise d'entraînement.
 
 ```python
 import torch
-from src.models.language import GPT, GPTConfig
+from src.models.language import GPT
 from src.models.language.tokenizer import Tokenizer
 
-checkpoint = torch.load('runs/language/model_001000.pt', map_location='cpu', weights_only=True)
-model = GPT(GPTConfig(**checkpoint['config']))
-model.load_state_dict(checkpoint['model'])
-model = model.to('cuda').eval()
+model = GPT.from_checkpoint('runs/language/model_001000.pt', device='cuda')
 tokenizer = Tokenizer()
 idx = torch.tensor([tokenizer.encode('La scène contient')], device='cuda')
 tokens = model.generate(idx, max_new_tokens=64, temperature=0.8, top_k=50)
