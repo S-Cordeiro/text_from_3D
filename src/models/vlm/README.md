@@ -40,3 +40,45 @@ model.language_model.requires_grad_(False)
 
 Cette modification fournit l'architecture et la génération ; elle ne lance pas
 d'entraînement et n'ajoute pas de jeu de données multimodal.
+
+## Variante Flamingo
+
+```python
+from src.models.vlm import FlamingoModel
+
+model = FlamingoModel.from_pretrained("vision.pt", "language.pt", device="cuda")
+model.train()
+logits, loss = model(pixel_values, idx, targets)
+loss.backward()
+generated = model.generate(pixel_values, idx, max_new_tokens=32)
+```
+
+`FlamingoModel(vision_model, language_model)` accepte aussi les modèles existants.
+Il insère `n_layer - 1` modules entre les blocs du GPT (au moins deux blocs requis).
+Chaque module applique :
+
+1. `x = x + tanh(attn_gate) * CrossAttention(LayerNorm(x), vision, vision)` ;
+2. `x = x + tanh(ff_gate) * SwiGLU(LayerNorm(x))`.
+
+Les deux portes scalaires sont initialisées à zéro : en mode évaluation, la
+sortie initiale est celle du GPT préentraîné. Les portes reçoivent des gradients
+dès le premier pas ; les branches visuelles reçoivent leur signal quand les
+portes s'ouvrent. Les projections clés/valeurs de chaque cross-attention
+acceptent directement la dimension du modèle visuel.
+
+Les tokens viennent de `SceneModel.encode_multiview`, avant les décodeurs objets
+et caméras. Tous les tokens de toutes les vues de la scène sont accessibles à
+chaque position textuelle. Il n'y a pas de resampler ni de gestion de séquences
+entrelacées images/texte : il s'agit d'une variante adaptée à une scène multivue.
+Le masque causal du GPT reste appliqué au texte.
+
+Les formats d'entrée, logits et cibles sont les mêmes que pour LLaVA, mais
+les tokens visuels ne consomment pas le contexte : `T <= block_size`.
+La génération calcule les tokens visuels une seule fois et tronque le texte
+ancien si nécessaire. Aucun gel supplémentaire n'est imposé ; pour entraîner
+uniquement les nouveaux modules, geler `vision_model` et `language_model`
+avec `requires_grad_(False)` comme ci-dessus. L'optimiseur doit inclure les
+paramètres de `model`, et pas seulement ceux de `model.language_model`.
+
+Vérifications sans téléchargement :
+`python -m scripts.check_flamingo` et `python -m scripts.check_vlm`.

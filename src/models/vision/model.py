@@ -46,9 +46,12 @@ class SceneModel(nn.Module):
 
     def encode_objects(self, pixel_values):
         """Return contextualized object queries, before prediction heads."""
+        return self.object_decoder(self.encode_multiview(pixel_values))
+
+    def encode_multiview(self, pixel_values):
+        """Return fused visual tokens, before object/camera decoders."""
         visual_tokens = self.visual_encoder(pixel_values)
-        mv_tokens = self.multi_view_encoder(visual_tokens)
-        return self.object_decoder(mv_tokens)
+        return self.multi_view_encoder(visual_tokens)
 
     def forward(self, pixel_values):
         visual_tokens = self.visual_encoder(pixel_values)
