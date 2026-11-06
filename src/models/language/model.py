@@ -54,16 +54,24 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, *, prefix_embeddings=None):
         # targets are already shifted by the data loader: y[t] = x[t + 1].
         B, T = idx.shape
-        if not 0 < T <= self.config.block_size:
+        prefix_length = 0
+        x = self.transformer.wte(idx)
+        if prefix_embeddings is not None:
+            if (prefix_embeddings.ndim != 3 or prefix_embeddings.shape[0] != B
+                    or prefix_embeddings.shape[2] != self.config.n_embd):
+                raise ValueError('prefix_embeddings must have shape (batch, prefix_length, n_embd)')
+            prefix_length = prefix_embeddings.shape[1]
+            x = torch.cat((prefix_embeddings.to(dtype=x.dtype), x), dim=1)
+        if not 0 < T or T + prefix_length > self.config.block_size:
             raise ValueError(f'Sequence length must be in [1, {self.config.block_size}]')
-        pos = torch.arange(T, device=idx.device)
-        x = self.transformer.wte(idx) + self.transformer.wpe(pos)
+        pos = torch.arange(T + prefix_length, device=idx.device)
+        x = x + self.transformer.wpe(pos)
         for block in self.transformer.h:
             x = block(x)
-        logits = self.lm_head(self.transformer.ln_f(x))
+        logits = self.lm_head(self.transformer.ln_f(x[:, prefix_length:]))
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
@@ -81,14 +89,18 @@ class GPT(nn.Module):
         return torch.optim.AdamW(groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, **kwargs)
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=50):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=50, *, prefix_embeddings=None):
         if temperature <= 0 or max_new_tokens < 0 or (top_k is not None and top_k <= 0):
             raise ValueError('Invalid sampling parameters')
+        prefix_length = 0 if prefix_embeddings is None else prefix_embeddings.shape[1]
+        text_context = self.config.block_size - prefix_length
+        if text_context <= 0 or idx.ndim != 2 or idx.shape[1] == 0:
+            raise ValueError('Generation requires at least one text token and room after the prefix')
         was_training = self.training
         self.eval()
         try:
             for _ in range(max_new_tokens):
-                logits, _ = self(idx[:, -self.config.block_size:])
+                logits, _ = self(idx[:, -text_context:], prefix_embeddings=prefix_embeddings)
                 logits = logits[:, -1, :].float() / temperature
                 if top_k is not None:
                     values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
