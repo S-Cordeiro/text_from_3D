@@ -2,7 +2,8 @@
 
 Architecture GPT inspirée de [build-nanogpt](https://github.com/karpathy/build-nanogpt).
 `GPTConfig` utilise les mêmes noms : `block_size`, `vocab_size`, `n_layer`,
-`n_head`, `n_embd`. Par défaut, le modèle a les dimensions de GPT-2 124M.
+`n_head`, `n_embd`. Par défaut : 8 couches, 8 têtes, dimension 768 et contexte
+de 1 024 tokens, soit 96 057 600 paramètres.
 Il part de poids aléatoires ; aucun poids préentraîné n'est téléchargé.
 Les blocs pré-normalisés réutilisent `src/models/blocks.py`, avec attention
 causale pour le langage et attention bidirectionnelle pour la vision.
@@ -33,6 +34,25 @@ plusieurs shards `train_*.npy` et `val_*.npy`, parcourus dans l'ordre puis boucl
 Chaque shard doit contenir au moins `batch_size * block_size + 1` tokens ;
 les fins de shard trop courtes sont ignorées. Les cibles sont décalées d'un token.
 
+Pour préparer FineWeb-Edu à plus grande échelle :
+
+```bash
+.venv/bin/python -m src.prepare_fineweb_edu --output-dir data/language
+```
+
+Le script télécharge progressivement les fichiers Parquet du sous-ensemble
+officiel `sample-10BT`, conservés dans le cache Hugging Face. Il produit exactement
+1 921 152 000 tokens d'entraînement (20 fois le nombre de paramètres par défaut)
+et 10 000 000 tokens de validation, issus de documents distincts, avec un token
+de fin de texte par document. Les shards contiennent au maximum 100 millions de
+tokens uint16, soit environ 3,86 Go au total, en plus des Parquet en cache.
+Le manifeste enregistre la révision source, les fichiers utilisés, les comptes
+et le statut. Attendre le statut `complete` avant d'entraîner. Le dossier de
+sortie doit être neuf ; la tokenisation interrompue ne reprend pas automatiquement.
+Les options `--train-tokens`, `--val-tokens`, `--shard-size`, `--threads` et
+`--revision` permettent d'ajuster la préparation. Avec le batch total par défaut
+de 32 768 tokens, prévoir environ 58 629 étapes pour traiter ce volume une fois.
+
 ## Entraîner sur un GPU CUDA
 
 ```bash
@@ -53,7 +73,35 @@ ou float16 avec GradScaler et `--compile` optionnel sont inclus.
 
 Les logs incluent pertes train/validation, norme des gradients et débit.
 Les checkpoints contiennent modèle, configuration, optimiseur, scaler et étape.
-Le script ne propose pas encore de reprise d'entraînement.
+La reprise restaure modèle, optimiseur, scaler, RNG et position exacte dans les
+shards, ainsi que le calendrier du taux d'apprentissage et la configuration :
+
+```bash
+.venv/bin/python -u -m src.train_language \
+  --resume runs/mon_entrainement/last.pt --max-seconds 6900
+```
+
+Les checkpoints sont publiés atomiquement. `last.pt` pointe sur le plus récent ;
+les trois derniers checkpoints numérotés sont conservés par défaut
+(`--keep-checkpoints`). La sauvegarde a lieu toutes les `--save-every` étapes
+ou `--save-seconds` secondes, puis à l'arrêt. SIGUSR1, SIGTERM et SIGINT
+demandent un arrêt après la mise à jour en cours, suivi d'une sauvegarde.
+`--max-seconds` fixe le budget de la session, sans modifier le calendrier total
+d'entraînement. Prévoir une marge pour terminer une étape et écrire le checkpoint.
+
+Sur Bentley, depuis la racine du projet, `bash scripts/submit_language_bentley.sh`
+soumet quatre tâches Slurm de deux heures au maximum, dépendantes les unes des
+autres. Chacune s'arrête après 1 h 55 et reprend `last.pt` à la suivante.
+Un test CUDA de sauvegarde/reprise précède le premier entraînement. Le code est
+figé dans le dossier du run ; les journaux Slurm sont dans `logs/language_JOBID.log`.
+Les huit heures sont un maximum cumulé d'allocation, hors attente dans la file.
+L'exécution est limitée à la nuit, de 18 h à 8 h, heure de Paris : Slurm reçoit
+une date de début et une échéance à 8 h. Le script refuse tout démarrage en
+journée, réduit son budget si nécessaire, réserve cinq minutes pour sauvegarder
+et utilise un timeout indépendant pour ne pas dépasser 8 h. Les créneaux qui
+ne peuvent plus tenir avant cette échéance ne démarrent pas ; ils ne sont pas
+reportés automatiquement à la nuit suivante. `--night-only` applique aussi
+la vérification de plage horaire lors d'une reprise manuelle.
 
 ## Charger et générer
 

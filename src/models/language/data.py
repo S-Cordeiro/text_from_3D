@@ -39,3 +39,22 @@ class DataLoaderLite:
         buf = torch.tensor(self.tokens[self.current_position:self.current_position + B*T+1].astype(np.int64))
         self.current_position += B * T
         return buf[:-1].view(B, T), buf[1:].view(B, T)
+
+    def state_dict(self):
+        return dict(batch_size=self.B, block_size=self.T, vocab_size=self.vocab_size,
+                    shards=[(p.name, p.stat().st_size) for p in self.shards],
+                    current_shard=self.current_shard, current_position=self.current_position)
+
+    def load_state_dict(self, state):
+        current = self.state_dict()
+        for key in ('batch_size', 'block_size', 'vocab_size', 'shards'):
+            if state[key] != current[key]:
+                raise ValueError(f'Cannot resume: data loader {key} changed')
+        shard, position = state['current_shard'], state['current_position']
+        if not 0 <= shard < len(self.shards) or position < 0 or position % (self.B * self.T):
+            raise ValueError('Invalid data loader position in checkpoint')
+        self.current_shard = shard
+        self._load_shard()
+        if position > len(self.tokens):
+            raise ValueError('Checkpoint position exceeds shard length')
+        self.current_position = position

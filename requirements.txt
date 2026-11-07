@@ -5,3 +5,5 @@ scipy
 matplotlib
 transformers
 tiktoken
+pyarrow
+huggingface_hub
