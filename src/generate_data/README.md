@@ -126,6 +126,14 @@ endpoints fix an axis, for example:
 }
 ```
 
+`uniform_objects_constrained_scale_closeup_config.json` keeps the same objects,
+placement and eight views, with a 55 mm lens instead of 40 mm. Objects appear
+37.5% larger in each image dimension. Generate a two-scene preview with:
+
+```bash
+.venv/bin/python src/generate_data/generate_dataset.py --config src/generate_data/uniform_objects_constrained_scale_closeup_config.json --train 2 --val 0 --test 0 --output dataset_constrained_scale_closeup_preview
+```
+
 ### Ten scenes with one multicolored cube
 
 ```bash
@@ -185,3 +193,85 @@ Large offsets may move objects out of frame. All options support split_overrides
 Object rotation settings use world coordinates. Targets are recomputed relative
 to the actual camera 0, so rotation_mode: none does not mean an identity target.
 Camera 0's relative pose remains identity, even when its world pose varies.
+
+## Occlusions and multi-view questions
+
+`occlusion_questions_config.json` brings low cameras (about 14° elevation)
+close to a compact layout of 3–4 objects, so objects occlude one another. On
+600 geometry-only scenes, each object covers about 50 × 50 px (35 × 35 px
+with `random_8_views_config.json`). 21% of (object, view) pairs are partly
+hidden, against 2% before, and 42% of scenes contain an object fully hidden in
+at least one view. About 7.5% of the pairs touch the image border. Spheres and
+cylinders have sizes similar to the cubes, and objects take one of six named
+colors. Each scene also gets `questions.json`.
+
+```bash
+.venv/bin/python src/generate_data/generate_dataset.py --config src/generate_data/occlusion_questions_config.json --output dataset_occlusion_questions
+```
+
+| Parameter | Meaning |
+| --- | --- |
+| `objects.linked_scale_axes_by_type` | Scale axes copied from the first axis of each group: `{"sphere": [[0, 1, 2]]}` keeps spheres round, `{"cylinder": [[0, 1]]}` keeps cylinder sections circular. |
+| `objects.color_palette` | Named RGB colors; each object draws one name, stored as `color_name`. Overrides `color_rgb`. |
+| `visibility.stride` | Enables ray-cast visibility (schema_version 2). One ray per `stride` × `stride` pixel block; 2 by default, about 0.5 s per scene. |
+| `occlusion.min_occluded_pairs` | Minimum number of (object, view) pairs whose `visible_fraction` is at most `occlusion.max_visible_fraction`, counting only pairs with at least `min_unoccluded_pixels`. Objects are re-placed up to `layout_attempts` times, then the last layout is kept with a warning. |
+| `questions` | Enables `questions.json`; keys and defaults in `DEFAULT_SETTINGS` of `questions.py`. |
+
+### Visibility
+
+With a `visibility` section, each camera of `ground_truth.json` has a
+`visibility` list with one record per object:
+
+- `visible_pixels`: pixels where the object is the first surface hit.
+- `unoccluded_pixels`: in-frame pixels it would cover without the other objects,
+  so `visible_fraction = visible_pixels / unoccluded_pixels` measures occlusion,
+  not truncation by the image border (`null` when the object is out of frame).
+- `occluders`: hidden pixels per occluding object.
+- `bbox_px`, `in_frame_fraction`: unclipped projected box and its share inside the image.
+
+Visibility is computed geometrically (BVH ray casts, no rendering), so it can
+reject layouts before rendering. Pixel counts are full-resolution estimates.
+
+### Questions
+
+`questions.py` builds templated English questions from `ground_truth.json`.
+Answers are short and closed (`yes/no`, `left/right`, `in front/behind`, an
+object type, `camera k`, a count, `45 degrees`), so they are scored by exact
+match. Every question records its `family` and `template`, so accuracy can be
+reported per skill:
+
+| Family | Skill | Templates |
+| --- | --- | --- |
+| A | Relations as seen by a camera | `A_side`, `A_depth`, `A_closest`, `A_extreme` |
+| B | Visibility and occlusion | `B_visible`, `B_count`, `B_hidden`, `B_partial`, `B_occluder`, `B_num_cameras` |
+| D | Cross-view correspondence | `D_most_visible`, `D_shared`, `D_only`, `D_extreme_seen`, `D_closest_camera` |
+| F | Perspective taking | `F_ego_side`, `F_ego_front`, `F_hidden_side` |
+| G | Metric comparisons | `G_closer_to`, `G_nearest_object`, `G_closest_pair`, `G_bigger`, `G_camera_angle` |
+
+Example question: *"The cyan sphere cannot be seen from camera 2. From that
+camera, is it to the left or to the right of the red cube?"* Its answer is `left`.
+
+Safeguards:
+
+- Relations inside a safety margin are ambiguous and never asked. Examples: a
+  horizontal gap under 5% of the image width, distances within 10–15% of each
+  other, an object neither clearly visible nor clearly hidden.
+- Objects are named by the shortest unambiguous expression (`the cube`, `the red
+  cube`, `the larger red cube`). Objects without one are never mentioned, but
+  can still be an answer.
+- For each template, the most frequent answer is capped at about 1.2 / (number
+  of answers) of a split's questions. This keeps the majority-answer baseline low.
+- `requires_multiview` tags templates where some answers logically need another
+  camera. It is a heuristic; a single-view ablation measures the actual need.
+
+Regenerate questions without rendering again, or print per-template statistics
+(counts, answer distribution, majority-answer accuracy):
+
+```bash
+python src/generate_data/questions.py --dataset dataset_occlusion_questions --overwrite
+python src/generate_data/questions.py --dataset dataset_occlusion_questions --stats
+```
+
+Both paths use the same seeds and produce the same questions. Standalone
+regeneration reads the `questions` section of the dataset's
+`generation_config.json` and ignores `split_overrides`.

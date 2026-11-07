@@ -1,0 +1,66 @@
+{
+  "seed": 42,
+  "splits": {
+    "train": 5000,
+    "val": 500,
+    "test": 500
+  },
+  "render": {
+    "resolution": [224, 224],
+    "samples": 32,
+    "max_bounces": 2
+  },
+  "objects": {
+    "count_range": [3, 4],
+    "types": ["cube", "sphere", "cylinder"],
+    "scale_range": [0.35, 0.7],
+    "rotation_mode": "uniform",
+    "position_extent": 1.7,
+    "min_gap": 0.1,
+    "placement_attempts": 1000,
+    "layout_attempts": 100,
+    "scale_ranges_by_type": {
+      "sphere": [[0.45, 0.8], [0.45, 0.8], [0.45, 0.8]],
+      "cylinder": [[0.4, 0.7], [0.4, 0.7], [0.35, 0.8]]
+    },
+    "linked_scale_axes_by_type": {
+      "sphere": [[0, 1, 2]],
+      "cylinder": [[0, 1]]
+    },
+    "color_palette": {
+      "red": [0.75, 0.06, 0.05],
+      "green": [0.08, 0.5, 0.08],
+      "blue": [0.05, 0.15, 0.75],
+      "yellow": [0.8, 0.65, 0.05],
+      "purple": [0.35, 0.06, 0.55],
+      "cyan": [0.05, 0.5, 0.6]
+    }
+  },
+  "cameras": {
+    "azimuths_deg": [0, 0, 0, 0, 0, 0, 0, 0],
+    "radius": 8.0,
+    "height": 2.5,
+    "target": [0.0, 0.0, 0.5],
+    "lens_mm": 55.0,
+    "sensor_width_mm": 36.0,
+    "azimuth_jitter_deg": [0, 360],
+    "radius_jitter": [-1, 1],
+    "height_jitter": [-1, 1],
+    "pitch_jitter_deg": [0, 0],
+    "yaw_jitter_deg": [0, 0],
+    "roll_jitter_deg": [-10, 10]
+  },
+  "visibility": {
+    "stride": 2
+  },
+  "occlusion": {
+    "min_occluded_pairs": 2,
+    "max_visible_fraction": 0.5,
+    "min_unoccluded_pixels": 100,
+    "layout_attempts": 30
+  },
+  "questions": {
+    "per_scene": 16
+  },
+  "split_overrides": {}
+}

@@ -12,6 +12,11 @@ import tempfile
 
 import bpy
 from mathutils import Euler, Matrix, Quaternion, Vector
+from mathutils.bvhtree import BVHTree
+
+# Blender does not add the script directory to sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import questions as scene_questions  # noqa: E402
 
 
 CLASS_IDS = {"cube": 0, "sphere": 1, "cylinder": 2}
@@ -124,36 +129,20 @@ def object_rotation(spec, rng):
     return Euler(tuple(math.radians(a) for a in angles), "XYZ").to_quaternion()
 
 
-def create_objects(config, rng):
-    objects, footprints = [], []
-    spec = config["objects"]
-    count = rng.randint(*spec["count_range"]) if "count_range" in spec else spec["count"]
-    for index in range(count):
-        kind = rng.choice(spec["types"])
-        obj = OBJECT_FACTORIES[kind]()
-        obj.name = f"{kind}_{index:03d}"
-        obj.rotation_mode = "QUATERNION"
-        obj.rotation_quaternion = object_rotation(spec, rng)
-        scale_ranges = spec.get("scale_ranges_by_type", {}).get(kind)
-        if scale_ranges is not None:
-            obj.scale = tuple(rng.uniform(*interval) for interval in scale_ranges)
-        else:
-            obj.scale = tuple(spec["scale"]) if "scale" in spec else tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
-        bpy.context.view_layer.update()
-        local_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
-        radius = max(math.hypot(v.x, v.y) for v in local_corners)
-        # Bounding-box disks conservatively prevent intersections. Use actual
-        # mesh vertices for ground contact of curved, rotated primitives.
-        min_z = min((obj.matrix_world @ v.co).z for v in obj.data.vertices)
-        footprints.append((radius, -min_z))
-        color = list(spec["color_rgb"]) if "color_rgb" in spec else [rng.uniform(0.15, 0.85) for _ in range(3)]
-        obj.data.materials.append(material(obj.name, color))
-        if "face_colors_rgb" in spec:
-            obj.data.materials.clear()
-            for face, face_color in zip(obj.data.polygons, spec["face_colors_rgb"]):
-                face.material_index = len(obj.data.materials)
-                obj.data.materials.append(material(f"{obj.name}_face_{face.index}", face_color))
-        objects.append((kind, obj, color))
+def footprint(obj):
+    """Ground-disk radius and center height, independent of the location."""
+    linear = obj.matrix_world.to_3x3()
+    corners = [linear @ Vector(corner) for corner in obj.bound_box]
+    radius = max(math.hypot(v.x, v.y) for v in corners)
+    # Bounding-box disks conservatively prevent intersections. Use actual
+    # mesh vertices for ground contact of curved, rotated primitives.
+    min_z = min((linear @ v.co).z for v in obj.data.vertices)
+    return radius, -min_z
+
+
+def place_objects(objects, spec, rng):
+    """Sample non-overlapping ground positions; geometry stays fixed."""
+    footprints = [footprint(obj) for _, obj, _ in objects]
     # Restart the entire layout when an early position blocks later objects.
     # Keep geometry fixed so retries do not bias the sampled sizes/rotations.
     layout_attempts = spec.get("layout_attempts", 100)
@@ -175,11 +164,50 @@ def create_objects(config, rng):
         raise ValueError(
             f"Placement impossible après {layout_attempts} dispositions "
             f"({spec['placement_attempts']} essais par objet) : "
-            f"count={count}, position_extent={spec['position_extent']}, "
+            f"count={len(objects)}, position_extent={spec['position_extent']}, "
             f"scale_range={spec['scale_range']}, min_gap={spec['min_gap']}. "
             "Agrandir position_extent ou réduire le nombre/la taille des objets."
         )
     bpy.context.view_layer.update()
+
+
+def create_objects(config, rng):
+    objects = []
+    spec = config["objects"]
+    count = rng.randint(*spec["count_range"]) if "count_range" in spec else spec["count"]
+    for index in range(count):
+        kind = rng.choice(spec["types"])
+        obj = OBJECT_FACTORIES[kind]()
+        obj.name = f"{kind}_{index:03d}"
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = object_rotation(spec, rng)
+        scale_ranges = spec.get("scale_ranges_by_type", {}).get(kind)
+        if scale_ranges is not None:
+            obj.scale = tuple(rng.uniform(*interval) for interval in scale_ranges)
+        else:
+            obj.scale = tuple(spec["scale"]) if "scale" in spec else tuple(rng.uniform(*spec["scale_range"]) for _ in range(3))
+        # Linked axes copy the first axis of each group: [[0, 1, 2]] keeps a
+        # sphere round, [[0, 1]] keeps a cylinder's cross-section circular.
+        scale = list(obj.scale)
+        for group in spec.get("linked_scale_axes_by_type", {}).get(kind, []):
+            for axis in group[1:]:
+                scale[axis] = scale[group[0]]
+        obj.scale = scale
+        bpy.context.view_layer.update()
+        if "color_palette" in spec:
+            # Named colors let questions refer to "the red cube".
+            obj["color_name"] = rng.choice(sorted(spec["color_palette"]))
+            color = list(spec["color_palette"][obj["color_name"]])
+        else:
+            color = list(spec["color_rgb"]) if "color_rgb" in spec else [rng.uniform(0.15, 0.85) for _ in range(3)]
+        obj.data.materials.append(material(obj.name, color))
+        if "face_colors_rgb" in spec:
+            obj.data.materials.clear()
+            for face, face_color in zip(obj.data.polygons, spec["face_colors_rgb"]):
+                face.material_index = len(obj.data.materials)
+                obj.data.materials.append(material(f"{obj.name}_face_{face.index}", face_color))
+        objects.append((kind, obj, color))
+    place_objects(objects, spec, rng)
     return objects
 
 
@@ -216,7 +244,95 @@ def create_cameras(spec, rng=None):
     return cameras
 
 
-def ground_truth(scene, objects, cameras, seed, split, index):
+def object_bvh(obj):
+    matrix = obj.matrix_world
+    vertices = [matrix @ v.co for v in obj.data.vertices]
+    return BVHTree.FromPolygons(vertices, [tuple(p.vertices) for p in obj.data.polygons])
+
+
+def projected_box(obj, camera, focal, width, height):
+    """Unclipped 2D box of the projected mesh and its fraction inside the frame."""
+    to_camera = camera.matrix_world.inverted() @ obj.matrix_world
+    us, vs = [], []
+    for vertex in obj.data.vertices:
+        point = to_camera @ vertex.co
+        if point.z >= -1e-6:  # Blender cameras look along -Z.
+            return None, 0.0
+        us.append(width / 2 + focal * point.x / -point.z)
+        vs.append(height / 2 - focal * point.y / -point.z)
+    box = [min(us), min(vs), max(us), max(vs)]
+    area = (box[2] - box[0]) * (box[3] - box[1])
+    inside = (max(0.0, min(box[2], width) - max(box[0], 0.0))
+              * max(0.0, min(box[3], height) - max(box[1], 0.0)))
+    return box, inside / area if area > 0 else 0.0
+
+
+def compute_visibility(scene, objects, cameras, stride=2):
+    """Ray-cast object masks for every view, without rendering.
+
+    One ray is cast through the center of each `stride`×`stride` pixel block.
+    Pixel counts are full-resolution estimates. `unoccluded_pixels` counts the
+    in-frame pixels the object would cover if the other objects were removed,
+    so `visible_fraction` measures occlusion only, not frame truncation.
+    The ground plane cannot hide objects resting on it from cameras above it.
+    """
+    width, height = scene.render.resolution_x, scene.render.resolution_y
+    trees = [object_bvh(obj) for _, obj, _ in objects]
+    names = [obj.name for _, obj, _ in objects]
+    block = stride * stride
+    views = []
+    for camera in cameras:
+        focal = width * camera.data.lens / camera.data.sensor_width
+        rotation = camera.matrix_world.to_3x3().normalized()
+        origin = camera.matrix_world.translation.copy()
+        count = len(objects)
+        visible, unoccluded = [0] * count, [0] * count
+        hidden_by = [[0] * count for _ in range(count)]
+        for py in range(stride // 2, height, stride):
+            y = -(py + 0.5 - height / 2) / focal
+            for px in range(stride // 2, width, stride):
+                direction = rotation @ Vector(((px + 0.5 - width / 2) / focal, y, -1.0))
+                direction.normalize()
+                hits = []
+                for i, tree in enumerate(trees):
+                    distance = tree.ray_cast(origin, direction)[3]
+                    if distance is not None:
+                        hits.append((distance, i))
+                if not hits:
+                    continue
+                front = min(hits)[1]
+                visible[front] += block
+                for _, i in hits:
+                    unoccluded[i] += block
+                    if i != front:
+                        hidden_by[i][front] += block
+        records = []
+        for i, (_, obj, _) in enumerate(objects):
+            box, in_frame = projected_box(obj, camera, focal, width, height)
+            records.append({
+                "object": names[i],
+                "visible_pixels": visible[i],
+                "unoccluded_pixels": unoccluded[i],
+                "visible_fraction": visible[i] / unoccluded[i] if unoccluded[i] else None,
+                "occluders": {names[j]: n for j, n in enumerate(hidden_by[i]) if n},
+                "bbox_px": box,
+                "in_frame_fraction": in_frame,
+            })
+        views.append(records)
+    return views
+
+
+def occlusion_satisfied(visibility, spec):
+    """Check the optional per-scene occlusion requirement."""
+    occluded = sum(
+        1 for view in visibility for record in view
+        if record["unoccluded_pixels"] >= spec.get("min_unoccluded_pixels", 100)
+        and record["visible_fraction"] <= spec.get("max_visible_fraction", 0.5)
+    )
+    return occluded >= spec.get("min_occluded_pairs", 0)
+
+
+def ground_truth(scene, objects, cameras, seed, split, index, visibility=None, stride=None):
     world_to_reference = cameras[0].matrix_world.inverted()
     width, height = scene.render.resolution_x, scene.render.resolution_y
     records = []
@@ -232,6 +348,8 @@ def ground_truth(scene, objects, cameras, seed, split, index):
                         "rotation_6d": list(rotation_matrix.col[0]) + list(rotation_matrix.col[1]),
                         "object_to_reference": matrix_rows(transform),
                         "object_to_world": matrix_rows(obj.matrix_world)})
+        if "color_name" in obj:
+            records[-1]["color_name"] = obj["color_name"]
         if len(obj.data.materials) > 1:
             records[-1]["face_colors"] = [
                 {"polygon_index": face.index, "normal_local": list(face.normal),
@@ -249,12 +367,17 @@ def ground_truth(scene, objects, cameras, seed, split, index):
                       "world_to_camera_cv": matrix_rows(blender_to_cv @ camera.matrix_world.inverted()),
                       "intrinsics_cv": [[focal, 0, width/2], [0, focal, height/2], [0, 0, 1]],
                       "lens_mm": camera.data.lens, "sensor_width_mm": camera.data.sensor_width})
-    return {"schema_version": 1, "scene_id": f"scene_{index:06d}", "split": split,
+        if visibility is not None:
+            views[-1]["visibility"] = visibility[i]
+    truth = {"schema_version": 1 if visibility is None else 2, "scene_id": f"scene_{index:06d}", "split": split,
             "seed": seed, "blender_version": bpy.app.version_string,
             "resolution": [width, height], "reference_camera": "camera_0",
             "coordinate_convention": "Blender camera: X right, Y up, -Z forward; units: meters",
             "world_to_reference": matrix_rows(world_to_reference),
             "objects": records, "cameras": views}
+    if visibility is not None:
+        truth["visibility_stride"] = stride
+    return truth
 
 
 def validate_config(config):
@@ -296,6 +419,21 @@ def validate_config(config):
             bounds(interval, f"scale_ranges_by_type.{kind}")
             if interval[0] <= 0:
                 raise ValueError("Les scales par type doivent être strictement positifs.")
+    linked = spec.get("linked_scale_axes_by_type", {})
+    if not isinstance(linked, dict) or set(linked) - OBJECT_FACTORIES.keys():
+        raise ValueError("objects.linked_scale_axes_by_type doit associer des types connus à des groupes d'axes.")
+    for kind, groups in linked.items():
+        axes = [axis for group in groups for axis in group]
+        if (any(not group for group in groups) or any(axis not in (0, 1, 2) for axis in axes)
+                or len(axes) != len(set(axes))):
+            raise ValueError(f"linked_scale_axes_by_type.{kind} attend des groupes disjoints d'axes 0, 1, 2.")
+    palette = spec.get("color_palette", {})
+    if not isinstance(palette, dict) or ("color_palette" in spec and not palette):
+        raise ValueError("objects.color_palette doit associer des noms à des couleurs RGB.")
+    for name, color in palette.items():
+        vector(color, f"objects.color_palette.{name}")
+        if any(v < 0 or v > 1 for v in color):
+            raise ValueError("objects.color_palette doit être dans [0, 1].")
     if "color_rgb" in spec:
         vector(spec["color_rgb"], "objects.color_rgb")
         if any(v < 0 or v > 1 for v in spec["color_rgb"]):
@@ -336,6 +474,35 @@ def validate_config(config):
     max_bounces = config["render"].get("max_bounces", 2)
     if not isinstance(max_bounces, int) or max_bounces < 0:
         raise ValueError("max_bounces doit être un entier positif ou nul.")
+    stride = config.get("visibility", {}).get("stride", 2)
+    if not isinstance(stride, int) or stride < 1:
+        raise ValueError("visibility.stride doit être un entier strictement positif.")
+    if "occlusion" in config and "visibility" not in config:
+        raise ValueError("occlusion nécessite une section visibility.")
+    if "questions" in config:
+        scene_questions.validate_settings(config["questions"])
+
+
+def build_scene(settings, seed):
+    """Create the scene geometry; returns (scene, objects, cameras, visibility, stride)."""
+    scene = reset_scene(settings, seed)
+    objects = create_objects(settings, random.Random(seed))
+    cameras = create_cameras(settings["cameras"], random.Random(seed ^ 0xCAFE))
+    if "visibility" not in settings:
+        return scene, objects, cameras, None, None
+    stride = settings["visibility"].get("stride", 2)
+    visibility = compute_visibility(scene, objects, cameras, stride)
+    occlusion = settings.get("occlusion")
+    if occlusion:
+        # Re-place the same objects until enough views contain occlusions;
+        # keep the last layout if the attempts run out.
+        layout_rng = random.Random(seed ^ 0x0CC1)
+        for _ in range(occlusion.get("layout_attempts", 30)):
+            if occlusion_satisfied(visibility, occlusion):
+                break
+            place_objects(objects, settings["objects"], layout_rng)
+            visibility = compute_visibility(scene, objects, cameras, stride)
+    return scene, objects, cameras, visibility, stride
 
 
 def main():
@@ -371,12 +538,14 @@ def main():
     for split, count in config["splits"].items():
         split_dir = args.output / split
         split_dir.mkdir(exist_ok=True)
+        # Answer counts are balanced across the whole split.
+        balancer = scene_questions.AnswerBalancer()
         for index in range(count):
             seed = scene_seed(config["seed"], split, index)
             settings = effective[split]
-            scene = reset_scene(settings, seed)
-            objects = create_objects(settings, random.Random(seed))
-            cameras = create_cameras(settings["cameras"], random.Random(seed ^ 0xCAFE))
+            scene, objects, cameras, visibility, stride = build_scene(settings, seed)
+            if visibility is not None and not occlusion_satisfied(visibility, settings.get("occlusion", {})):
+                print(f"Warning: occlusion requirement not met for {split}/{index}", flush=True)
             destination = split_dir / f"scene_{index:06d}"
             temporary = Path(tempfile.mkdtemp(prefix=".scene_", dir=split_dir))
             try:
@@ -384,8 +553,12 @@ def main():
                     scene.camera = camera
                     scene.render.filepath = str((temporary / f"view_{view}.png").resolve())
                     bpy.ops.render.render(write_still=True)
-                truth = ground_truth(scene, objects, cameras, seed, split, index)
+                truth = ground_truth(scene, objects, cameras, seed, split, index, visibility, stride)
                 (temporary / "ground_truth.json").write_text(json.dumps(truth, indent=2) + "\n")
+                if "questions" in settings:
+                    generated = scene_questions.generate_scene_questions(
+                        truth, settings["questions"], random.Random(seed ^ 0x9E57), balancer)
+                    (temporary / "questions.json").write_text(json.dumps(generated, indent=2) + "\n")
                 temporary.rename(destination)
             finally:
                 if temporary.exists():
