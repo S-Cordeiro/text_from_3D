@@ -26,6 +26,7 @@ class CameraDecoderConfig:
 @dataclass
 class SceneModelConfig:
     d_model : int = 256
+    dino_unfreeze_blocks : int = 0
 
     multiview : MultiViewConfig = field(default_factory=MultiViewConfig)
     object_decoder : ObjectDecoderConfig = field(default_factory=ObjectDecoderConfig)
@@ -34,6 +35,8 @@ class SceneModelConfig:
     camera_decoder : CameraDecoderConfig = field(default_factory=CameraDecoderConfig)
 
     def __post_init__(self):
+        if not 0 <= self.dino_unfreeze_blocks <= 12:
+            raise ValueError('dino_unfreeze_blocks must be between 0 and 12')
         for name in ("multiview", "object_decoder", "camera_decoder"):
             n_head = getattr(self, name).n_head
             if n_head <= 0 or self.d_model % n_head != 0:

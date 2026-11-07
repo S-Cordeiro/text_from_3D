@@ -35,7 +35,7 @@ class SceneModel(nn.Module):
         super().__init__()
         self.config = config
 
-        self.visual_encoder = VisualEncoder(config.d_model)
+        self.visual_encoder = VisualEncoder(config.d_model, config.dino_unfreeze_blocks)
         self.multi_view_encoder = MultiViewEncoder(config)
 
         self.object_decoder = ObjectDecoder(config)

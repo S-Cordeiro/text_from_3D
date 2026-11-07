@@ -4,29 +4,24 @@ light wrapper around DINOv2 ViT-S/14
 
 import torch
 import torch.nn as nn
-from PIL import Image
-from transformers import AutoImageProcessor, AutoModel
-
-import torch
-import torch.nn as nn
-from transformers import AutoModel
-
-
-import torch
-import torch.nn as nn
 from transformers import AutoModel
 
 
 class VisualEncoder(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model, unfreeze_blocks=0):
         """
-        dinov2 parameters are frozen, but the projection's are not
+        Freeze the backbone except for the requested final blocks and layer norm.
         """
         super().__init__()
 
         self.dino = AutoModel.from_pretrained("facebook/dinov2-small")
         self.dino.requires_grad_(False)
         self.dino.eval()
+        self.unfreeze_blocks = unfreeze_blocks
+        if unfreeze_blocks:
+            for block in self.dino.encoder.layer[-unfreeze_blocks:]:
+                block.requires_grad_(True)
+            self.dino.layernorm.requires_grad_(True)
 
         self.proj = nn.Linear(
             self.dino.config.hidden_size,  # 384
@@ -50,7 +45,7 @@ class VisualEncoder(nn.Module):
 
         x = x.reshape(B * V, C, H, W) # (B, V, C, H, W) -> (B*V, C, H, W)
 
-        with torch.no_grad():
+        with torch.set_grad_enabled(torch.is_grad_enabled() and self.unfreeze_blocks > 0):
             outputs = self.dino(pixel_values=x)
             x = outputs.last_hidden_state[:, 1:, :] # (B*V, N_tokens, 384)
 
