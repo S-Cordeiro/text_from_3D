@@ -1,31 +1,39 @@
 # Text from 3D
 
-**From multiple images to a structured description of a 3D scene.**
+**Answering spatial questions about a 3D scene from several views of it.**
 
-The goal is to reconstruct a simple Blender-generated scene from several views and describe it in text: which objects are present, their positions, rotations and scales, and the positions and orientations of the cameras. Positions and rotations are expressed relative to the first camera.
+A personal project to learn how to build a vision-language model (VLM) from
+scratch. Scenes of simple objects are rendered with Blender from eight cameras.
+The model answers questions that need several views to resolve, for example:
 
-This is an ongoing personal project exploring how much 3D scene information can be recovered from multiple images. The current prototype uses a DETR-based architecture to test the feasibility of the approach and assess which object and camera attributes can be extracted across different scenes. The long-term goal is to build a vision-language model (VLM) that generates textual descriptions of a scene from its views.
-
-## Approach
-
-For these initial experiments, the model predicts structured attributes using a DETR-based architecture:
-
-1. A frozen **DINOv2 visual encoder** extracts features from each image.
-2. A **multi-view encoder** uses attention to combine information across views, with embeddings identifying each camera and image patch position.
-3. Learned **object queries** attend to these shared features. Each query acts as a prediction slot for an object, estimating its type, position, scale and rotation, or predicting that no object is present. Hungarian matching pairs predictions with the target objects during training, so objects do not need a predefined order.
-
-A separate camera decoder predicts camera positions and orientations from the same shared features.
-
-## First results
+> *The cyan sphere cannot be seen from camera 2. From that camera, is it to the
+> left or to the right of the red cube?* → `left`
 
 ![A rendered dataset view showing two cubes with distinct face colors.](figures/dataset-example.png)
 
-*Example view from a Blender-generated dataset. Distinct face colors provide visual cues for object orientation in the initial experiments.*
+## Components
 
-The initial feasibility experiments use synthetic scenes with randomized object positions and rotations, rendered from **eight fixed cameras** at 224 × 224 pixels per view. Controlled scene generation provides ground-truth object and camera attributes for quantitative evaluation.
+- **Synthetic data** ([src/generate_data](src/generate_data)): Blender scenes
+  with exact ground truth, per-view occlusion, and CLEVR-style templated
+  questions grouped by skill: viewpoint relations, occlusion, cross-view
+  correspondence, perspective taking, metric comparisons.
+- **Vision** ([src/models/vision](src/models/vision)): DETR-style model. A
+  frozen DINOv2 encodes each view, attention fuses the views, and object
+  queries predict each object's type and pose. Hungarian matching pairs
+  predictions with targets during training. A first experiment reached an
+  object rotation error of about 8° on cubes.
+- **Language** ([src/models/language](src/models/language)): a 96M-parameter
+  GPT pretrained on about 2B FineWeb-Edu tokens.
+- **VLM** ([src/models/vlm](src/models/vlm)): two ways to connect the vision
+  model to the GPT. LLaVA-style feeds visual tokens to the GPT as a prefix;
+  Flamingo-style adds gated cross-attention layers.
 
-An initial cube experiment reached an **object rotation error of approximately 8°**. This is an encouraging preliminary result under controlled conditions; it does not yet establish generalization to other object types or unseen camera configurations.
+Training instructions: [src/README.md](src/README.md).
 
-## Work in progress
+## Bibliography
 
-Current work focuses on extending the experiments to more object types without requiring a distinct color on every face. This requires accounting for rotational symmetries: different orientations can produce the same appearance, so supervision and evaluation should reflect what is visually identifiable. Another next step is to train and evaluate with randomly varied camera positions and orientations; camera poses remain fixed in the initial experiments.
+- Carion et al. *End-to-End Object Detection with Transformers* (DETR). ECCV 2020. [arXiv:2005.12872](https://arxiv.org/abs/2005.12872)
+- Johnson et al. *CLEVR: A Diagnostic Dataset for Compositional Language and Elementary Visual Reasoning*. CVPR 2017. [arXiv:1612.06890](https://arxiv.org/abs/1612.06890)
+- Oquab et al. *DINOv2: Learning Robust Visual Features without Supervision*. TMLR 2024. [arXiv:2304.07193](https://arxiv.org/abs/2304.07193)
+- Alayrac et al. *Flamingo: a Visual Language Model for Few-Shot Learning*. NeurIPS 2022. [arXiv:2204.14198](https://arxiv.org/abs/2204.14198)
+- Liu et al. *Visual Instruction Tuning* (LLaVA). NeurIPS 2023. [arXiv:2304.08485](https://arxiv.org/abs/2304.08485)
