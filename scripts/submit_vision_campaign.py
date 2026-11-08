@@ -8,12 +8,47 @@ import subprocess
 from zoneinfo import ZoneInfo
 
 
+def ablation_plan():
+    """Campaign of 2026-11-06: capacity and DINO unfreezing, 80 epochs, 5000 scenes."""
+    experiments = []
+    for name, width, depth in [('baseline', 256, 4), ('depth6', 256, 6), ('width384', 384, 4)]:
+        experiments.append(dict(name=name, d_model=width, mv_layers=depth, epochs=80,
+            unfreeze=0, lr=1e-4, min_lr=3e-6, dino_lr=1e-6, warmup=750))
+    for blocks in (0, 1, 2):
+        experiments.append(dict(name=f'finetune_dino{blocks}', d_model=256, mv_layers=4,
+            epochs=10, unfreeze=blocks, lr=2e-5, min_lr=2e-6, dino_lr=1e-6,
+            warmup=100, initialize_from='baseline'))
+    protocol = ('One seed (1337); same effective batch 16, microbatch 4; 80 epochs from scratch; '
+                'three matched 10-epoch branches from baseline best (frozen control, last 1/2 DINO blocks); '
+                '15M trainable parameter limit; nights 18:00-08:00 Europe/Paris.')
+    return experiments, protocol
+
+
+def data_scaling_plan():
+    """Effect of the number of training scenes at a fixed compute budget."""
+    common = dict(unfreeze=0, lr=1e-4, min_lr=3e-6, dino_lr=1e-6, warmup=750,
+                  max_steps=50_000, eval_every=1000, select_on='objects')
+    experiments = [dict(name=f'data{n}', d_model=256, mv_layers=4, train_scenes=n, **common)
+                   for n in (2500, 5000, 10000)]
+    experiments.append(dict(name='width384_data10000', d_model=384, mv_layers=4, train_scenes=10000, **common))
+    protocol = ('One seed (1337); effective batch 16, microbatch 4; 50000 optimizer steps for every run '
+                '(same compute, so 320/160/80 epochs for 2500/5000/10000 scenes); nested train subsets '
+                '(first N scenes); same 1000 validation scenes; best.pt selected on the validation '
+                'object loss (class + position + rotation), not the camera-dominated total; '
+                '15M trainable parameter limit; nights 18:00-08:00 Europe/Paris.')
+    return experiments, protocol
+
+
+PLANS = {'ablation': ablation_plan, 'data_scaling': data_scaling_plan}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('campaign', type=Path)
     parser.add_argument('--project', type=Path)
     parser.add_argument('--language-run', type=Path)
     parser.add_argument('--dataset', type=Path)
+    parser.add_argument('--plan', choices=sorted(PLANS), default='data_scaling')
     parser.add_argument('--continue-campaign', action='store_true')
     args = parser.parse_args()
     campaign = args.campaign.resolve()
@@ -21,24 +56,15 @@ def main():
     if not args.continue_campaign:
         if manifest_path.exists():
             raise ValueError('Campaign already exists; refusing duplicate submission')
-        if not all((args.project, args.language_run, args.dataset)):
-            parser.error('New campaigns require project, language-run and dataset')
-        experiments = []
-        for name, width, depth in [('baseline', 256, 4), ('depth6', 256, 6), ('width384', 384, 4)]:
-            experiments.append(dict(name=name, d_model=width, mv_layers=depth, epochs=80,
-                unfreeze=0, lr=1e-4, min_lr=3e-6, dino_lr=1e-6, warmup=750))
-        for blocks in (0, 1, 2):
-            experiments.append(dict(name=f'finetune_dino{blocks}', d_model=256, mv_layers=4,
-                epochs=10, unfreeze=blocks, lr=2e-5, min_lr=2e-6, dino_lr=1e-6,
-                warmup=100, initialize_from='baseline'))
+        if not all((args.project, args.dataset)):
+            parser.error('New campaigns require project and dataset (language-run is optional)')
+        experiments, protocol = PLANS[args.plan]()
         hashes = {str(p.relative_to(campaign / 'code')): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted((campaign / 'code').rglob('*')) if p.is_file() and '__pycache__' not in str(p)}
         manifest = dict(project=str(args.project.resolve()), python=str(args.project.resolve() / '.venv/bin/python'),
-            language_run=str(args.language_run.resolve()), dataset=str(args.dataset.resolve()),
-            experiments=experiments, code_sha256=hashes, max_allocations=32,
-            protocol='One seed (1337); same effective batch 16, microbatch 4; 80 epochs from scratch; '
-                     'three matched 10-epoch branches from baseline best (frozen control, last 1/2 DINO blocks); '
-                     '15M trainable parameter limit; nights 18:00-08:00 Europe/Paris.')
+            language_run=str(args.language_run.resolve()) if args.language_run else None,
+            dataset=str(args.dataset.resolve()), plan=args.plan,
+            experiments=experiments, code_sha256=hashes, max_allocations=32, protocol=protocol)
         manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     manifest = json.loads(manifest_path.read_text())
     jobs_file = campaign / 'jobs.jsonl'

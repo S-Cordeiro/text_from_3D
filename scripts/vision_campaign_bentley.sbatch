@@ -19,9 +19,11 @@ cd "$campaign/code"
 exec 9>"$campaign/.campaign.lock"
 flock -n 9 || { echo 'Campaign already running'; exit 1; }
 # Also prevent concurrent training of the existing language run.
-language_run="$("$project/.venv/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["language_run"])' "$campaign/manifest.json")"
-exec 8>"$language_run/.training.lock"
-flock -n 8 || { echo 'Language run already active'; exit 1; }
+language_run="$("$project/.venv/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("language_run") or "")' "$campaign/manifest.json")"
+if [[ -n "$language_run" ]]; then
+    exec 8>"$language_run/.training.lock"
+    flock -n 8 || { echo 'Language run already active'; exit 1; }
+fi
 remaining="$("$project/.venv/bin/python" -m src.language_schedule budget)"
 allocation_seconds=$(( ${3:?Missing allocation minutes} * 60 ))
 if (( remaining > allocation_seconds )); then remaining="$allocation_seconds"; fi

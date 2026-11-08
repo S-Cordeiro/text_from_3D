@@ -1,4 +1,4 @@
-"""Resumable night campaign: finish the existing LLM, then controlled vision ablations."""
+"""Resumable night campaign: optionally finish the LLM, then controlled vision runs."""
 import argparse
 import json
 from pathlib import Path
@@ -46,11 +46,13 @@ def main():
         print('RUN', command, flush=True)
         with Path(logfile).open('a') as output:
             subprocess.run(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True)
-    state = llm_state(python, Path(manifest['language_run']) / 'last.pt')
-    write_json(campaign / 'llm_status.json', state)
-    if state['target'] != 58629:
-        raise ValueError('Unexpected LLM target; refusing to change the original schedule')
-    if state['step'] < state['target']:
+    state = None
+    if manifest.get('language_run'):
+        state = llm_state(python, Path(manifest['language_run']) / 'last.pt')
+        write_json(campaign / 'llm_status.json', state)
+        if state['target'] != 58629:
+            raise ValueError('Unexpected LLM target; refusing to change the original schedule')
+    if state and state['step'] < state['target']:
         if remaining() < 600:
             return 75
         language_run = Path(manifest['language_run'])
@@ -76,13 +78,17 @@ def main():
             return 75
         command = [python, '-u', '-m', 'src.train', '--dataset', manifest['dataset'],
             '--dataset-audit', str(audit), '--run-dir', str(directory),
-            '--epochs', str(experiment['epochs']), '--d-model', str(experiment['d_model']),
+            '--epochs', str(experiment.get('epochs', 1)), '--d-model', str(experiment['d_model']),
             '--mv-layers', str(experiment['mv_layers']), '--dino-unfreeze-blocks', str(experiment['unfreeze']),
             '--lr', str(experiment['lr']), '--min-lr', str(experiment['min_lr']),
             '--dino-lr', str(experiment['dino_lr']), '--warmup-steps', str(experiment['warmup']),
             '--batch-size', '16', '--micro-batch-size', '4', '--seed', '1337',
-            '--eval-every', '300', '--log-every', '25', '--save-seconds', '900',
+            '--eval-every', str(experiment.get('eval_every', 300)), '--log-every', '25',
+            '--save-seconds', '900', '--select-on', experiment.get('select_on', 'total'),
             '--max-seconds', str(remaining() - 120)]
+        for key, flag in (('max_steps', '--max-steps'), ('train_scenes', '--train-scenes')):
+            if experiment.get(key) is not None:
+                command += [flag, str(experiment[key])]
         if (directory / 'last.pt').exists():
             command += ['--resume', str(directory / 'last.pt')]
         elif experiment.get('initialize_from'):
@@ -93,7 +99,10 @@ def main():
             return 75
     for experiment in manifest['experiments']:
         directory = campaign / experiment['name']
+        if (directory / 'best_validation_metrics.json').exists():
+            continue
         if (directory / 'best_validation_predictions.jsonl.gz').exists():
+            run([python, '-m', 'src.vision_metrics', str(directory)], campaign / 'code', campaign / 'analysis.log')
             continue
         if remaining() < 600:
             return 75
@@ -104,6 +113,7 @@ def main():
         if result.returncode == 75:
             return 75
         result.check_returncode()
+        run([python, '-m', 'src.vision_metrics', str(directory)], campaign / 'code', campaign / 'analysis.log')
     run([python, 'scripts/summarize_vision_campaign.py', str(campaign)], campaign / 'code', campaign / 'summary.log')
     write_json(campaign / 'status.json', {'completed': True, 'finished_at_unix': time.time()})
     return 0
