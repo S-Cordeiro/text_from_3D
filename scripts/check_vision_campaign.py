@@ -67,10 +67,11 @@ def main():
             def loader(*args, **kwargs):
                 kwargs['num_workers'] = 0
                 return DataLoader(*args, **kwargs)
-            def run(name, resume=False, interrupt=False):
+            def run(name, resume=False, interrupt=False, extra=()):
                 argv = ['train', '--dataset', str(dataset), '--run-dir', str(root / name),
                     '--epochs', '2', '--d-model', '16', '--mv-layers', '1', '--batch-size', '2',
                     '--micro-batch-size', '1', '--warmup-steps', '1', '--eval-every', '2', '--no-compile']
+                argv += list(extra)
                 if resume:
                     argv += ['--resume', str(root / name / 'last.pt')]
                 triggered = False
@@ -96,6 +97,21 @@ def main():
             for key in full['model_state_dict']:
                 torch.testing.assert_close(full['model_state_dict'][key], resumed['model_state_dict'][key], rtol=0, atol=0)
             assert json.loads((root / 'resumed/status.json').read_text())['completed']
+            # Data-scaling options: a nested subset and a step budget ending mid-epoch,
+            # interrupted then resumed; best.pt follows the object loss.
+            subset = ['--train-scenes', '3', '--max-steps', '3']
+            run('subset', interrupt=True, extra=subset)
+            run('subset', resume=True, extra=subset)
+            status = json.loads((root / 'subset/status.json').read_text())
+            config = json.loads((root / 'subset/config.json').read_text())
+            assert status['completed'] and status['step'] == 3 and status['selection_metric'] == 'objects_total'
+            assert config['train_scenes'] == 3 and config['steps_per_epoch'] == 2 and config['total_steps'] == 3
+            assert config['last_train_scene'] == 'scene_0002'
+            records = [json.loads(l) for l in (root / 'subset/metrics.jsonl').read_text().splitlines()]
+            assert max(r['step'] for r in records) == 3
+            assert all('objects_total' in r for r in records if r['split'] in ('val', 'final_val'))
+            best = torch.load(root / 'subset/best.pt', weights_only=True)
+            assert best['best_val_loss'] == min(r['objects_total'] for r in records if r['split'] in ('val', 'final_val'))
             # The real audit must reject two declared classes for label 2.
             with patch.object(sys, 'argv', ['train', '--dataset', str(dataset), '--n-classes', '2']):
                 try:
@@ -104,7 +120,8 @@ def main():
                     assert exc.code == 2
                 else:
                     raise AssertionError('Conflicting classes accepted')
-    print('PASS: label collision rejected; gradients selective; interrupted/resumed weights bit-identical.')
+    print('PASS: label collision rejected; gradients selective; interrupted/resumed weights bit-identical; '
+          'train-scenes/max-steps/object selection OK.')
 
 
 if __name__ == '__main__':

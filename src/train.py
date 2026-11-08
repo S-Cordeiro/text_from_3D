@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from transformers import AutoImageProcessor
 
 from src.dataset.scene_dataset import SceneDataset, collate_scenes
@@ -33,6 +33,18 @@ def predict(model, images, device):
         group: {name: value.float() for name, value in values.items()}
         for group, values in predictions.items()
     }
+
+
+OBJECT_TERMS = ('object_class', 'object_position', 'object_rotation')
+
+
+def objects_total(metrics, weights):
+    """Weighted object part of the loss: the checkpoint selection criterion.
+
+    The full total is dominated by camera position, which says little about
+    the objects a VLM is asked about.
+    """
+    return sum(weights[name] * metrics[name] for name in OBJECT_TERMS)
 
 
 def format_metrics(metrics):
@@ -89,16 +101,17 @@ def evaluate(model, scene_loss, loader, device, by_count=False, should_stop=None
     finally:
         model.train(was_training)
     overall = {name: value / max(weights[name], 1) for name, value in totals.items()}
+    overall['objects_total'] = objects_total(overall, scene_loss.weights)
     if not by_count:
         return overall
-    groups = {
-        count: {
+    groups = {}
+    for count, group in sorted(grouped_totals.items()):
+        groups[count] = {
             'scene_count': scene_counts[count],
             **{name: value / max(grouped_weights[count][name], 1)
                for name, value in group.items()},
         }
-        for count, group in sorted(grouped_totals.items())
-    }
+        groups[count]['objects_total'] = objects_total(groups[count], scene_loss.weights)
     return overall, groups
 
 
@@ -143,6 +156,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', default='dataset_single_cube')
     parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--max-steps', type=int,
+                        help='Total optimizer steps; overrides --epochs (data-scaling runs share it)')
+    parser.add_argument('--train-scenes', type=int,
+                        help='Train on the first N scenes of the train split (nested subsets)')
+    parser.add_argument('--select-on', choices=('objects', 'total'), default='objects',
+                        help='Validation loss used to keep best.pt')
     parser.add_argument('--n-classes', type=int, default=None,
                         help='Number of object classes, excluding the no-object class')
     parser.add_argument('--eval-every', type=int, default=100)
@@ -210,8 +229,8 @@ def main():
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     torch.set_float32_matmul_precision('high')
-    if min(args.epochs, args.eval_every, args.log_every) < 1:
-        parser.error('epochs, eval-every and log-every must be positive')
+    if min(args.epochs, args.eval_every, args.log_every, args.max_steps or 1, args.train_scenes or 1) < 1:
+        parser.error('epochs, max-steps, train-scenes, eval-every and log-every must be positive')
     if args.n_classes < 1:
         parser.error('n-classes must be positive')
 
@@ -224,7 +243,13 @@ def main():
             do_center_crop=False, return_tensors='pt',
         )['pixel_values'][0]
 
-    train_dataset = SceneDataset(args.dataset, split='train', transform=transform)
+    full_train_dataset = SceneDataset(args.dataset, split='train', transform=transform)
+    train_dataset = full_train_dataset
+    if args.train_scenes is not None:
+        if args.train_scenes > len(full_train_dataset):
+            parser.error(f'train-scenes exceeds the {len(full_train_dataset)} available scenes')
+        # Scene paths are sorted, so smaller subsets are nested in larger ones.
+        train_dataset = Subset(full_train_dataset, range(args.train_scenes))
     val_dataset = SceneDataset(args.dataset, split='val', transform=transform)
 
     if not len(train_dataset) or not len(val_dataset):
@@ -266,13 +291,21 @@ def main():
     lr_max, lr_min = args.lr, args.min_lr
     accumulation = args.batch_size // args.micro_batch_size
     steps_per_epoch = math.ceil(len(train_loader) / accumulation)
-    total_steps = args.epochs * steps_per_epoch
+    if args.max_steps is not None:
+        args.epochs = math.ceil(args.max_steps / steps_per_epoch)
+        total_steps = args.max_steps
+    else:
+        total_steps = args.epochs * steps_per_epoch
     warmup_steps = min(args.warmup_steps, max(0, total_steps - 1))
     run_config = {
         'arguments': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         'model': asdict(model_config),
         'dataset_path': str(Path(args.dataset).resolve()),
         'train_scenes': len(train_dataset),
+        'train_scenes_available': len(full_train_dataset),
+        'last_train_scene': full_train_dataset.scene_paths[len(train_dataset) - 1].name,
+        'steps_per_epoch': steps_per_epoch,
+        'total_steps': total_steps,
         'validation_scenes': len(val_dataset),
         'validation_sets': {
             name: {'path': str(loader.dataset.directory.resolve()),
@@ -280,6 +313,7 @@ def main():
             for name, loader in validation_loaders.items()
         },
         'checkpoint_selection_split': 'val',
+        'checkpoint_selection_metric': 'objects_total' if args.select_on == 'objects' else 'total',
         'processor': 'facebook/dinov2-small',
         'optimizer': {'name': 'AdamW', 'lr': lr_max},
         'scheduler': {
@@ -358,6 +392,7 @@ def main():
                 'split': split, 'epoch': epoch, 'step': step, **metrics,
             }) + '\n')
 
+    selection_key = 'objects_total' if args.select_on == 'objects' else 'total'
     best_loss = math.inf
     validation_metrics = None
     step, next_epoch, next_batch = 0, 1, 0
@@ -369,8 +404,9 @@ def main():
         for key in ('model', 'batch_size', 'micro_batch_size', 'dataset_audit'):
             if old_config[key] != run_config[key]:
                 raise ValueError(f'Resume configuration mismatch: {key}')
-        for key in ('epochs', 'seed', 'lr', 'min_lr', 'dino_lr', 'warmup_steps', 'eval_every'):
-            if old_config['arguments'][key] != run_config['arguments'][key]:
+        for key in ('epochs', 'max_steps', 'train_scenes', 'select_on', 'seed', 'lr', 'min_lr',
+                    'dino_lr', 'warmup_steps', 'eval_every'):
+            if old_config['arguments'].get(key) != run_config['arguments'].get(key):
                 raise ValueError(f'Resume argument mismatch: {key}')
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -400,6 +436,9 @@ def main():
 
     model.train()
     for epoch in range(next_epoch, args.epochs + 1):
+        # A run resumed after its last step only needs its final validation.
+        if step >= total_steps:
+            break
         train_loader.generator.manual_seed(args.seed + epoch)
         resume_batch = next_batch if epoch == next_epoch else 0
         metrics_accum, accumulated_scenes = {}, 0
@@ -454,17 +493,19 @@ def main():
                         record_metrics(f'{split}_{count}_objects', epoch, step, group_metrics)
                     if split == 'val':
                         validation_metrics = overall
-                if complete_validation and validation_metrics['total'] < best_loss:
-                    best_loss = validation_metrics['total']
+                if complete_validation and validation_metrics[selection_key] < best_loss:
+                    best_loss = validation_metrics[selection_key]
                     if not args.no_checkpoints:
                         save(run_dir / 'best.pt')
                 if not args.no_checkpoints:
                     save(run_dir / 'last.pt')
             if not args.no_checkpoints and time.monotonic() - last_saved >= args.save_seconds:
                 save(run_dir / 'last.pt')
+            if step == total_steps:
+                break
         if not args.no_checkpoints:
             save(run_dir / 'last.pt')
-        if should_stop():
+        if should_stop() or step == total_steps:
             break
     # A stop during final validation leaves the training cursor complete. Re-run
     # validation next session before declaring the experiment complete.
@@ -474,14 +515,15 @@ def main():
         if final_metrics is not None:
             validation_metrics, grouped = final_metrics
             record_metrics('final_val', args.epochs, step, validation_metrics)
-            if validation_metrics['total'] < best_loss:
-                best_loss = validation_metrics['total']
+            if validation_metrics[selection_key] < best_loss:
+                best_loss = validation_metrics[selection_key]
                 if not args.no_checkpoints:
                     save(run_dir / 'best.pt')
             if not args.no_checkpoints:
                 save(run_dir / 'last.pt')
     status = dict(completed=step == total_steps and final_metrics is not None, step=step,
-                  total_steps=total_steps, best_val_loss=best_loss, stop_reason=stop_reason,
+                  total_steps=total_steps, best_val_loss=best_loss, selection_metric=selection_key,
+                  stop_reason=stop_reason,
                   elapsed_seconds=elapsed_before + time.monotonic() - started,
                   peak_cuda_bytes=max(peak_before, torch.cuda.max_memory_allocated()) if device.type == 'cuda' else 0)
     (run_dir / 'status.json').write_text(json.dumps(status, indent=2) + '\n')
