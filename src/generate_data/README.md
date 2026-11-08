@@ -201,9 +201,12 @@ close to a compact layout of 3–4 objects, so objects occlude one another. On
 600 geometry-only scenes, each object covers about 50 × 50 px (35 × 35 px
 with `random_8_views_config.json`). 21% of (object, view) pairs are partly
 hidden, against 2% before, and 42% of scenes contain an object fully hidden in
-at least one view. About 7.5% of the pairs touch the image border. Spheres and
-cylinders have sizes similar to the cubes, and objects take one of six named
-colors. Each scene also gets `questions.json`.
+at least one view. About 7.5% of the pairs touch the image border. These
+figures predate the switch to fixed sizes. All objects now share the scale
+`[0.6, 0.6, 0.6]`: regular cubes of edge 1.2, spheres of diameter 1.2, and
+cylinders of diameter and height 1.2. The vision model therefore predicts no
+scale. Objects take one of six named colors, never repeated within a type in a
+scene, so every object can be named. Each scene also gets `questions.json`.
 
 ```bash
 .venv/bin/python src/generate_data/generate_dataset.py --config src/generate_data/occlusion_questions_config.json --output dataset_occlusion_questions
@@ -246,7 +249,7 @@ reported per skill:
 | B | Visibility and occlusion | `B_visible`, `B_count`, `B_hidden`, `B_partial`, `B_occluder`, `B_num_cameras` |
 | D | Cross-view correspondence | `D_most_visible`, `D_shared`, `D_only`, `D_extreme_seen`, `D_closest_camera` |
 | F | Perspective taking | `F_ego_side`, `F_ego_front`, `F_hidden_side` |
-| G | Metric comparisons | `G_closer_to`, `G_nearest_object`, `G_closest_pair`, `G_bigger`, `G_camera_angle` |
+| G | Metric comparisons | `G_closer_to`, `G_nearest_object`, `G_closest_pair`, `G_camera_angle` |
 
 Example question: *"The cyan sphere cannot be seen from camera 2. From that
 camera, is it to the left or to the right of the red cube?"* Its answer is `left`.
@@ -257,8 +260,8 @@ Safeguards:
   horizontal gap under 5% of the image width, distances within 10–15% of each
   other, an object neither clearly visible nor clearly hidden.
 - Objects are named by the shortest unambiguous expression (`the cube`, `the red
-  cube`, `the larger red cube`). Objects without one are never mentioned, but
-  can still be an answer.
+  cube`). Objects without one are never mentioned, but can still be an answer.
+  Sizes are fixed, so there is no size question and no `the larger cube`.
 - For each template, the most frequent answer is capped at about 1.2 / (number
   of answers) of a split's questions. This keeps the majority-answer baseline low.
 - `requires_multiview` tags templates where some answers logically need another

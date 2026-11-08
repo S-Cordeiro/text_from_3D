@@ -165,7 +165,7 @@ def place_objects(objects, spec, rng):
             f"Placement impossible après {layout_attempts} dispositions "
             f"({spec['placement_attempts']} essais par objet) : "
             f"count={len(objects)}, position_extent={spec['position_extent']}, "
-            f"scale_range={spec['scale_range']}, min_gap={spec['min_gap']}. "
+            f"scale={spec.get('scale', spec.get('scale_range'))}, min_gap={spec['min_gap']}. "
             "Agrandir position_extent ou réduire le nombre/la taille des objets."
         )
     bpy.context.view_layer.update()
@@ -195,8 +195,11 @@ def create_objects(config, rng):
         obj.scale = scale
         bpy.context.view_layer.update()
         if "color_palette" in spec:
-            # Named colors let questions refer to "the red cube".
-            obj["color_name"] = rng.choice(sorted(spec["color_palette"]))
+            # Named colors let questions refer to "the red cube". Objects of
+            # one type share a size, so each color is used once per type.
+            used = {o["color_name"] for k, o, _ in objects if k == kind}
+            names = [n for n in sorted(spec["color_palette"]) if n not in used]
+            obj["color_name"] = rng.choice(names or sorted(spec["color_palette"]))
             color = list(spec["color_palette"][obj["color_name"]])
         else:
             color = list(spec["color_rgb"]) if "color_rgb" in spec else [rng.uniform(0.15, 0.85) for _ in range(3)]
@@ -388,8 +391,9 @@ def validate_config(config):
         raise ValueError("objects.count ou count_range doit définir des entiers strictement positifs ordonnés.")
     if not spec["types"] or set(spec["types"])-OBJECT_FACTORIES.keys():
         raise ValueError("Nombre ou types d'objets invalides.")
-    if len(spec["scale_range"]) != 2 or not 0 < spec["scale_range"][0] <= spec["scale_range"][1]:
-        raise ValueError("scale_range doit contenir deux valeurs positives croissantes.")
+    if "scale" not in spec and (len(spec.get("scale_range", [])) != 2
+            or not 0 < spec["scale_range"][0] <= spec["scale_range"][1]):
+        raise ValueError("scale ou scale_range (deux valeurs positives croissantes) est requis.")
     if spec["position_extent"] < 0 or spec["min_gap"] < 0 or spec["placement_attempts"] < 1:
         raise ValueError("Paramètres de placement invalides.")
     if spec["position_extent"] == 0 and counts[1] > 1:

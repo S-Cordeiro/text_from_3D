@@ -6,7 +6,7 @@ Each question has a family (topic) so results can be broken down per skill:
     B  visibility and occlusion       (what a camera can or cannot see, and why)
     D  cross-view correspondence      (relating what different cameras see)
     F  perspective taking             (relations from a viewpoint that is not a camera)
-    G  metric comparisons             (3D distances, sizes, angles between cameras)
+    G  metric comparisons             (3D distances, angles between cameras)
 
 Answers are computed from `ground_truth.json`; relations closer than a safety
 margin are considered ambiguous and never asked. Families B and D, plus a few
@@ -52,7 +52,6 @@ DEFAULT_SETTINGS = {
     "side_margin": 0.05,           # horizontal gap, fraction of image width
     "depth_ratio": 1.1,            # camera-distance ratio
     "distance_ratio": 1.15,        # object-distance ratio
-    "size_ratio": 1.8,             # volume ratio (about 1.22 in linear size)
     "angle_margin_deg": 15.0,      # away from the left/right or front/back boundary
     "angle_bin_deg": 45.0,
     "angle_bin_tolerance_deg": 12.0,
@@ -67,7 +66,6 @@ DEFAULT_SETTINGS = {
     "most_visible_ratio": 1.25,
 }
 
-SHAPE_FACTORS = {"cube": 1.0, "sphere": math.pi / 6, "cylinder": math.pi / 4}
 PLURALS = {"cube": "cubes", "sphere": "spheres", "cylinder": "cylinders"}
 
 
@@ -124,7 +122,6 @@ class SceneFacts:
         self.colors = [o.get("color_name") for o in objects]
         # World coordinates: Z up, objects resting on the ground plane.
         self.positions = [translation(o["object_to_world"]) for o in objects]
-        self.volumes = [math.prod(o["dimensions"]) * SHAPE_FACTORS[o["type"]] for o in objects]
         cameras = truth["cameras"]
         self.k = len(cameras)
         self.camera_positions = [translation(c["camera_to_world"]) for c in cameras]
@@ -150,8 +147,8 @@ class SceneFacts:
     def referring_expressions(self):
         """Shortest unambiguous name of each object, or None.
 
-        Tries "the cube", then "the red cube" (if colors are named), then a
-        size superlative within the remaining group ("the larger red cube").
+        Tries "the cube", then "the red cube" (if colors are named). Objects
+        have a fixed size per type, so two red cubes are never referable.
         """
         refs = [None] * self.n
         by_type, by_color_type = defaultdict(list), defaultdict(list)
@@ -159,27 +156,11 @@ class SceneFacts:
             by_type[kind].append(i)
             if self.colors[i] is not None:
                 by_color_type[(self.colors[i], kind)].append(i)
-        ratio = self.s["size_ratio"]
         for i, kind in enumerate(self.types):
             if len(by_type[kind]) == 1:
                 refs[i] = f"the {kind}"
             elif self.colors[i] is not None and len(by_color_type[(self.colors[i], kind)]) == 1:
                 refs[i] = f"the {self.colors[i]} {kind}"
-        groups = by_color_type if any(c is not None for c in self.colors) else by_type
-        for key, indices in groups.items():
-            if len(indices) < 2:
-                continue
-            kind = " ".join(key) if isinstance(key, tuple) else key
-            order = sorted(indices, key=lambda i: self.volumes[i])
-            if len(order) == 2:
-                small, big = order
-                if self.volumes[big] >= ratio * self.volumes[small]:
-                    refs[big], refs[small] = f"the larger {kind}", f"the smaller {kind}"
-                continue
-            if self.volumes[order[-1]] >= ratio * self.volumes[order[-2]]:
-                refs[order[-1]] = f"the largest {kind}"
-            if self.volumes[order[1]] >= ratio * self.volumes[order[0]]:
-                refs[order[0]] = f"the smallest {kind}"
         return refs
 
     def record(self, k, i):
@@ -659,23 +640,6 @@ def g_closest_pair(sc):
     answer = " and ".join(sorted(sc.types[i] for i in best))
     return [Candidate(["Which two objects are closest to each other?"],
                       answer, {"objects": [sc.ids[i] for i in best]})]
-
-
-@template("G_bigger", "G")
-def g_bigger(sc):
-    out = []
-    for i, j in ordered_pairs(sc.referable):
-        # Same-type pairs are already named by size ("the larger cube").
-        if sc.types[i] == sc.types[j]:
-            continue
-        vi, vj = sc.volumes[i], sc.volumes[j]
-        if max(vi, vj) < sc.s["size_ratio"] * min(vi, vj):
-            continue
-        out.append(Candidate(
-            [f"Is {sc.refs[i]} bigger than {sc.refs[j]}?"],
-            "yes" if vi > vj else "no",
-            {"objects": [sc.ids[i], sc.ids[j]]}, ("G_bigger", frozenset((i, j)))))
-    return out
 
 
 @template("G_camera_angle", "G", requires_multiview=True)
