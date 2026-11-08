@@ -4,6 +4,7 @@ Each question has a family (topic) so results can be broken down per skill:
 
     A  viewpoint-relative relations   (left/right, front/behind as seen by a camera)
     B  visibility and occlusion       (what a camera can or cannot see, and why)
+    C  camera layout                  (where the cameras stand relative to each other)
     D  cross-view correspondence      (relating what different cameras see)
     F  perspective taking             (relations from a viewpoint that is not a camera)
     G  metric comparisons             (3D distances, angles between cameras)
@@ -33,6 +34,7 @@ SCHEMA_VERSION = 1
 FAMILIES = {
     "A": "viewpoint-relative relations",
     "B": "visibility and occlusion",
+    "C": "camera layout",
     "D": "cross-view correspondence",
     "F": "perspective taking",
     "G": "metric comparisons",
@@ -41,7 +43,7 @@ FAMILIES = {
 DEFAULT_SETTINGS = {
     # Number of questions sampled per scene (fewer if not enough are valid).
     "per_scene": 16,
-    "families": ["A", "B", "D", "F", "G"],
+    "families": ["A", "B", "C", "D", "F", "G"],
     "max_per_template": 2,
     # Answer balancing across a split: once a template has `balance_warmup`
     # questions, an answer whose share exceeds balance_slack / (number of
@@ -55,6 +57,12 @@ DEFAULT_SETTINGS = {
     "angle_margin_deg": 15.0,      # away from the left/right or front/back boundary
     "angle_bin_deg": 45.0,
     "angle_bin_tolerance_deg": 12.0,
+    # Camera layout: the answer must beat the runner-up by camera_gap_deg;
+    # a camera "behind" an object lies within behind_max_deg of the line of
+    # sight; heights are compared only when they differ by height_margin.
+    "camera_gap_deg": 15.0,
+    "behind_max_deg": 20.0,
+    "height_margin": 0.4,
     # Visibility states, from ray-cast pixel counts (fractions of image area).
     "visible_min_pixels": 0.004,   # ~200 px at 224x224
     "visible_min_fraction": 0.2,   # of the unoccluded in-frame silhouette
@@ -434,6 +442,114 @@ def b_num_cameras(sc):
         out.append(Candidate(
             [f"From how many cameras can {x} be seen?", f"How many cameras can see {x}?"],
             str(states.count("visible")), {"object": sc.ids[i]}))
+    return out
+
+
+# C: camera layout ------------------------------------------------------------
+# Left and right are those of someone standing at a camera and facing the
+# center of the scene, as in family F. Camera 0 is the vision model's reference
+# frame, so it is never an answer; C_higher leaves it out of its pairs so that
+# its mere presence cannot reveal the answer.
+
+SCENE_CENTER = (0.0, 0.0)
+
+
+def camera_azimuth_gap(sc, j, k):
+    """Counterclockwise azimuth (degrees, seen from above) from camera j to camera k."""
+    aj = math.atan2(sc.camera_positions[j][1], sc.camera_positions[j][0])
+    ak = math.atan2(sc.camera_positions[k][1], sc.camera_positions[k][0])
+    return math.degrees((ak - aj) % (2 * math.pi))
+
+
+def camera_side_angle(sc, j, k):
+    """Ground angle of camera k from camera j facing the scene center (> 0: left)."""
+    return sc.ground_angle(sc.camera_positions[j], SCENE_CENTER, sc.camera_positions[k])
+
+
+@template("C_camera_side", "C", requires_multiview=True)
+def c_camera_side(sc):
+    out = []
+    for j, k in ordered_pairs(range(sc.k)):
+        gap = camera_azimuth_gap(sc, j, k)
+        # Nearly coincident cameras have no clear side.
+        if min(gap, 360 - gap) < sc.s["camera_gap_deg"]:
+            continue
+        answer = classify_side(camera_side_angle(sc, j, k), sc.s["angle_margin_deg"])
+        if answer is None:
+            continue
+        out.append(Candidate(
+            [f"Standing at camera {j} and facing the center of the scene, is camera {k} on your left or on your right?",
+             f"Seen from camera {j}, looking toward the center of the scene, is camera {k} to the left or to the right?"],
+            answer, {"cameras": [j, k]}))
+    return out
+
+
+@template("C_next_camera", "C", requires_multiview=True)
+def c_next_camera(sc):
+    out = []
+    for j in range(sc.k):
+        for side in ("left", "right"):
+            # Azimuth gap from camera j, counted toward that side.
+            gaps = {}
+            for k in range(sc.k):
+                angle = camera_side_angle(sc, j, k) if k != j else None
+                if angle is None or classify_side(angle, sc.s["angle_margin_deg"]) != side:
+                    continue
+                gap = camera_azimuth_gap(sc, j, k)
+                gaps[k] = gap if side == "right" else 360 - gap
+            order = sorted(gaps, key=gaps.get)
+            if not order or order[0] == 0 or gaps[order[0]] < sc.s["camera_gap_deg"]:
+                continue
+            if len(order) > 1 and gaps[order[1]] - gaps[order[0]] < sc.s["camera_gap_deg"]:
+                continue
+            out.append(Candidate(
+                [f"Standing at camera {j} and facing the center of the scene, which camera is the next one on your {side}?",
+                 f"Going around the scene from camera {j}, which camera comes next on its {side}?"],
+                f"camera {order[0]}", {"camera": j, "side": side}))
+    return out
+
+
+@template("C_higher", "C", requires_multiview=True)
+def c_higher(sc):
+    out = []
+    for j, k in ordered_pairs(range(1, sc.k)):
+        hj, hk = sc.camera_positions[j][2], sc.camera_positions[k][2]
+        if abs(hj - hk) < sc.s["height_margin"]:
+            continue
+        out.append(Candidate(
+            [f"Which camera is higher, camera {j} or camera {k}?",
+             f"Is camera {j} or camera {k} placed higher above the ground?"],
+            f"camera {j if hj > hk else k}", {"cameras": [j, k]},
+            ("C_higher", frozenset((j, k)))))
+    return out
+
+
+@template("C_behind_object", "C", requires_multiview=True)
+def c_behind_object(sc):
+    out = []
+    for j in range(sc.k):
+        cj = sc.camera_positions[j]
+        for i in sc.referable:
+            o = sc.positions[i]
+            # Angle at the object between the line of sight from camera j and
+            # the direction of camera k, seen from above.
+            angles = {}
+            for k in range(sc.k):
+                if k == j:
+                    continue
+                angles[k] = abs(sc.ground_angle(o, (2 * o[0] - cj[0], 2 * o[1] - cj[1]),
+                                                sc.camera_positions[k]))
+            order = sorted(angles, key=angles.get)
+            best = order[0]
+            if best == 0 or angles[best] > sc.s["behind_max_deg"]:
+                continue
+            if len(order) > 1 and angles[order[1]] - angles[best] < sc.s["camera_gap_deg"]:
+                continue
+            x = sc.refs[i]
+            out.append(Candidate(
+                [f"Seen from camera {j}, which camera stands behind {x}?",
+                 f"Looking from camera {j} toward {x}, which camera is on the other side of it?"],
+                f"camera {best}", {"camera": j, "object": sc.ids[i]}))
     return out
 
 

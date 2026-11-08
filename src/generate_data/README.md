@@ -247,12 +247,23 @@ reported per skill:
 | --- | --- | --- |
 | A | Relations as seen by a camera | `A_side`, `A_depth`, `A_closest`, `A_extreme` |
 | B | Visibility and occlusion | `B_visible`, `B_count`, `B_hidden`, `B_partial`, `B_occluder`, `B_num_cameras` |
+| C | Camera layout | `C_camera_side`, `C_next_camera`, `C_higher`, `C_behind_object` |
 | D | Cross-view correspondence | `D_most_visible`, `D_shared`, `D_only`, `D_extreme_seen`, `D_closest_camera` |
 | F | Perspective taking | `F_ego_side`, `F_ego_front`, `F_hidden_side` |
 | G | Metric comparisons | `G_closer_to`, `G_nearest_object`, `G_closest_pair`, `G_camera_angle` |
 
 Example question: *"The cyan sphere cannot be seen from camera 2. From that
 camera, is it to the left or to the right of the red cube?"* Its answer is `left`.
+
+Family C asks where the cameras stand. Example: *"Standing at camera 3 and
+facing the center of the scene, which camera is the next one on your right?"*
+Left and right are those of someone at the camera facing the scene center, as
+in family F. Camera 0 is the vision model's reference frame, so it is never a
+`camera k` answer; `C_higher` leaves it out entirely, otherwise naming it would
+reveal the answer. Cameras less than `camera_gap_deg` (15°) apart in azimuth
+are not compared, and an answer must beat the runner-up by that gap.
+`C_behind_object` accepts a camera within `behind_max_deg` (20°) of the line of
+sight, and `C_higher` needs a `height_margin` of 0.4.
 
 Safeguards:
 
