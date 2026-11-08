@@ -27,7 +27,8 @@ case "$action" in
     rsync "${flags[@]}" --exclude='*.pt' --exclude='*.pth' --exclude='*.ckpt' \
       --exclude='wandb/' --exclude='__pycache__/' \
       --include='*/' --include='*.json' --include='*.jsonl' --include='*.txt' \
-      --include='*.log' --include='*.npz' --include='events.out.tfevents*' \
+      --include='*.log' --include='*.npz' --include='*.csv' --include='*.jsonl.gz' \
+      --include='*.md' --include='events.out.tfevents*' \
       --exclude='*' "$remote:$remote_dir/runs/" runs/
     rsync "${flags[@]}" "$remote:$remote_dir/logs/" logs/
     ;;

@@ -8,3 +8,4 @@ dev
 runs
 /tests/
 logs
+data/

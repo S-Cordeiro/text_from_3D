@@ -61,3 +61,36 @@ Après entraînement, le résumé peut être régénéré sans GPU :
 ```bash
 .venv/bin/python scripts/summarize_vision_campaign.py CAMPAIGN
 ```
+
+## Campagne « data_scaling » (plan par défaut depuis le 8 novembre 2026)
+
+`submit_vision_campaign.py --plan data_scaling` (défaut ; `--plan ablation` rejoue
+la campagne du 6 novembre). L'option `--language-run` est désormais facultative :
+sans elle, aucune étape LLM.
+
+| Essai | Architecture | Scènes d'entraînement |
+| --- | --- | --- |
+| data2500 | 256/4 | 2 500 premières |
+| data5000 | 256/4 | 5 000 premières |
+| data10000 | 256/4 | 10 000 |
+| width384_data10000 | 384/4 | 10 000 |
+
+Tous les essais font **50 000 pas** (même calcul : 320, 160 et 80 époques), avec
+une validation tous les 1 000 pas sur les mêmes 1 000 scènes de validation. Les
+sous-ensembles sont imbriqués (`--train-scenes N` prend les N premières scènes
+triées). `best.pt` est choisi sur la loss objets de validation (`objects_total` =
+classe + position + rotation), pas sur le total dominé par la position caméra.
+
+Après l'entraînement, pour chaque essai : export des prédictions puis
+`python -m src.vision_metrics RUN`, qui écrit `best_validation_metrics.json`
+(erreurs en unités et degrés, comptage, caméras), `best_validation_objects.csv`
+et `best_validation_cameras.csv`. Le résumé de campagne écrit `summary.csv`
+(une ligne par essai) et `curves.csv` (courbes alignées par pas).
+`bash scripts/pull.sh` rapatrie ces CSV et les prédictions `.jsonl.gz`, sans
+les poids.
+
+Commande de soumission (sur Bentley, après copie du code dans `CAMPAIGN/code/`) :
+
+```bash
+.venv/bin/python scripts/submit_vision_campaign.py CAMPAIGN --project . --dataset data/occlusion_questions
+```
