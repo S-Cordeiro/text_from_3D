@@ -13,7 +13,7 @@ class SceneDataset(Dataset):
     """Load one scene per sample from ``root/split/scene_*/``.
 
     Samples contain ``images`` (V, 3, H, W) and ``targets``. The latter groups
-    ``objects`` with ``classes`` (N,), ``positions`` and ``scales`` (N, 3),
+    ``objects`` with ``classes`` (N,), ``positions`` (N, 3),
     ``rotations`` (N, 3, 3), and ``cameras`` with ``positions`` (V, 3) and
     ``rotations`` (V, 3, 3). All geometric targets use the generator's
     camera-0 reference frame. Camera order follows the JSON.
@@ -72,10 +72,6 @@ class SceneDataset(Dataset):
                     ),
                     "positions": torch.tensor(
                         [obj["position"] for obj in truth["objects"]],
-                        dtype=torch.float32,
-                    ).reshape(-1, 3),
-                    "scales": torch.tensor(
-                        [obj["scale"] for obj in truth["objects"]],
                         dtype=torch.float32,
                     ).reshape(-1, 3),
                     "rotations": torch.tensor(

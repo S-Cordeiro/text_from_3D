@@ -21,33 +21,31 @@ for batch in loader:
 les cibles sur le device des prédictions.
 
 Un échantillon contient `images` de forme `(V, 3, H, W)`, `objects` avec
-`classes` (int64, `(N,)`), `positions` et `scales` (float32, `(N, 3)`),
+`classes` (int64, `(N,)`), `positions` (float32, `(N, 3)`),
 `rotations` (float32, `(N, 3, 3)`), et `cameras`
 avec `positions` (float32, `(V, 3)`) et `rotations` (float32, `(V, 3, 3)`).
 Les images et caméras suivent l'ordre du JSON, et les positions et rotations
 sont exprimées dans le repère de la caméra 0. Les scènes sans objet sont prises
 en charge. Les autres annotations ne sont pas utilisées par `SceneLoss`.
 
-`scales` contient les facteurs d'échelle locaux (`scale` du JSON), pas les
-dimensions : pour un cube de base d'arête 2, `dimensions = 2 * scale`.
+Les objets ont une taille fixe : l'échelle n'est ni chargée ni prédite.
 `rotations` contient les matrices `rotation_matrix` des objets dans le repère
 de référence. La représentation 6D prédite par `ObjectPredictionHead` concatène
 les deux premières colonnes de ces matrices, comme le générateur.
 
-`SceneLoss` retourne `object_class`, `object_position`, `object_scale`,
-`object_rotation`, `camera_position`, `camera_rotation` et `total`. L'échelle
-utilise Smooth L1 et les rotations (objets et caméras) la distance de Frobenius
-au carré, sommée sur les neuf coefficients puis moyennée sur les rotations.
+`SceneLoss` retourne `object_class`, `object_position`,
+`object_rotation`, `camera_position`, `camera_rotation` et `total`. Les
+rotations (objets et caméras) utilisent la distance de Frobenius au carré, sommée sur les neuf coefficients puis moyennée sur les rotations.
 Les métriques `object_rotation_angle` et `camera_rotation_angle` donnent
 l'angle géodésique moyen en radians ; elles sont détachées du graphe et exclues
 de `total`. Pour les objets, l'angle est minimisé sur les 24 symétries du cube
 ou calculé entre les axes Z non orientés des cylindres. Les sphères sont exclues
-de cette moyenne, qui vaut zéro sans objet orientable. Les trois pertes
+de cette moyenne, qui vaut zéro sans objet orientable. Les deux pertes
 géométriques des objets utilisent les mêmes paires de l'appariement hongrois
 (classe et position). Les requêtes non appariées ne contribuent pas à ces pertes.
 Tous les poids valent 1 par défaut et sont configurables, par exemple
-`SceneLoss(weights={"object_scale": 0.5, "object_rotation": 2.0})`.
-Les prédictions doivent fournir `scale` `(B, Q, 3)` et `rotation` `(B, Q, 6)`.
+`SceneLoss(weights={"object_position": 0.5, "object_rotation": 2.0})`.
+Les prédictions doivent fournir `position` `(B, Q, 3)` et `rotation` `(B, Q, 6)`.
 Les cibles peuvent être les annotations JSON brutes ou les dictionnaires du
 dataset ; les rotations cibles en tenseurs peuvent aussi être de forme `(N, 6)`.
 

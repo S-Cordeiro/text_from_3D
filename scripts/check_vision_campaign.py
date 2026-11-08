@@ -58,7 +58,7 @@ def main():
                     folder.mkdir(parents=True)
                     Image.new('RGB', (14, 14), (i * 25, 100, 50)).save(folder / 'view.png')
                     truth = dict(objects=[dict(class_id=2, type='cylinder', position=[0, 0, 1],
-                        scale=[1, 1, 0.5], rotation_matrix=torch.eye(3).tolist())],
+                        rotation_matrix=torch.eye(3).tolist())],
                         cameras=[dict(image='view.png', camera_to_reference=identity) for _ in range(8)])
                     (folder / 'ground_truth.json').write_text(json.dumps(truth))
             audit = audit_dataset(dataset)

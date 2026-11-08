@@ -26,7 +26,7 @@ def summarize(campaign):
             best_step=best['step'], best_total=best['total'],
             object_rotation_deg=math.degrees(best['object_rotation_angle']),
             camera_rotation_deg=math.degrees(best['camera_rotation_angle']))
-        for key in ('object_class', 'object_position', 'object_scale', 'object_rotation',
+        for key in ('object_class', 'object_position', 'object_rotation',
                     'camera_position', 'camera_rotation', 'matching_accuracy'):
             row[key] = best[key]
         row['final_total'] = vals[-1]['total']

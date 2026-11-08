@@ -70,14 +70,12 @@ class ObjectPredictionHead(nn.Module):
 
         self.class_head = nn.Linear(config.d_model, config.n_classes + 1)
         self.position_head = nn.Linear(config.d_model, 3)
-        self.scale_head = nn.Linear(config.d_model, 3)
         self.rotation_head = nn.Linear(config.d_model, 6)
 
     def forward(self, object_queries):
         out = {
             "class_logits" : self.class_head(object_queries),
             "position" :     self.position_head(object_queries),
-            "scale" :        self.scale_head(object_queries),
             "rotation" :     self.rotation_head(object_queries),
         }
         return out

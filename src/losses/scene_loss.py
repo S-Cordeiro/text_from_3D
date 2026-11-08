@@ -9,7 +9,6 @@ from .geometric_utils import (
     matrix_rotation_loss,
     object_rotation_angle,
     object_rotation_loss,
-    object_scale_loss,
     rotation_6d_to_matrix,
 )
 from .matching import HungarianMatcher
@@ -22,11 +21,11 @@ class SceneLoss(nn.Module):
     Cameras are paired by view order; only objects require Hungarian matching.
     The returned component losses are unweighted; only ``total`` applies the
     configured weights.
-    Object scale is the local scaling factor, not the object's dimensions.
+    Objects have a fixed size per type, so no scale is predicted.
     Object rotation predictions concatenate the first two rotation columns.
-    Scale and rotation supervision use the same class/position assignment.
-    Object losses use matched target classes: spheres ignore scale/rotation;
-    cylinders supervise local Z scale and their unoriented symmetry axis.
+    Rotation supervision uses the same class/position assignment.
+    Object losses use matched target classes: spheres ignore rotation;
+    cylinders supervise their unoriented symmetry axis.
     Cubes minimize squared Frobenius distance over their 24 rotation symmetries;
     cameras use squared Frobenius rotation distance directly.
     Detached ``*_rotation_angle``
@@ -46,7 +45,6 @@ class SceneLoss(nn.Module):
         self.weights = {
             "object_class": 1.0,
             "object_position": 1.0,
-            "object_scale": 1.0,
             "object_rotation": 1.0,
             "camera_position": 1.0,
             "camera_rotation": 1.0,
@@ -63,7 +61,7 @@ class SceneLoss(nn.Module):
 
     def forward(self, pred, targets):
         """Return scalar tensors including the weighted total for backward()."""
-        logits, positions, scales, rotations = self._object_predictions(pred)
+        logits, positions, rotations = self._object_predictions(pred)
         targets = self._normalize_targets(targets, logits.shape[0])
 
         if len(targets) != logits.shape[0]:
@@ -73,7 +71,7 @@ class SceneLoss(nn.Module):
             raise ValueError("Object and camera predictions must have the same batch size")
 
         object_targets = [
-            self._object_targets(target, logits, positions, scales, rotations)
+            self._object_targets(target, logits, positions, rotations)
             for target in targets
         ]
         target_classes = [target[0] for target in object_targets]
@@ -98,19 +96,16 @@ class SceneLoss(nn.Module):
 
         predicted_points = []
         target_points = []
-        predicted_scales, target_scales = [], []
         predicted_rotations, target_rotations = [], []
         matched_classes = []
 
         # Gather matched positions and replace the labels of matched queries.
         for b, (queries, objects) in enumerate(matches):
-            classes, points, sizes, matrices = object_targets[b]
+            classes, points, matrices = object_targets[b]
 
             labels[b, queries] = classes[objects]
             predicted_points.append(positions[b, queries])
             target_points.append(points[objects])
-            predicted_scales.append(scales[b, queries])
-            target_scales.append(sizes[objects])
             predicted_rotations.append(rotations[b, queries])
             target_rotations.append(matrices[objects])
             matched_classes.append(classes[objects])
@@ -137,9 +132,6 @@ class SceneLoss(nn.Module):
                 torch.cat(target_points),
             )
             classes = torch.cat(matched_classes)
-            object_scale = object_scale_loss(
-                torch.cat(predicted_scales), torch.cat(target_scales), classes
-            )
             predicted_matrices = rotation_6d_to_matrix(torch.cat(predicted_rotations))
             target_matrices = torch.cat(target_rotations)
             object_rotation = object_rotation_loss(predicted_matrices, target_matrices, classes)
@@ -147,7 +139,6 @@ class SceneLoss(nn.Module):
                 rotation_angle = object_rotation_angle(predicted_matrices, target_matrices, classes)
         else:
             object_position = positions.sum() * 0
-            object_scale = scales.sum() * 0
             object_rotation = rotations.sum() * 0
             rotation_angle = object_rotation.detach()
 
@@ -167,7 +158,6 @@ class SceneLoss(nn.Module):
         total = (
             self.weights["object_class"] * object_class
             + self.weights["object_position"] * object_position
-            + self.weights["object_scale"] * object_scale
             + self.weights["object_rotation"] * object_rotation
             + self.weights["camera_position"] * camera_position
             + self.weights["camera_rotation"] * camera_rotation
@@ -177,7 +167,6 @@ class SceneLoss(nn.Module):
             "total": total,
             "object_class": object_class,
             "object_position": object_position,
-            "object_scale": object_scale,
             "object_rotation": object_rotation,
             "camera_position": camera_position,
             "camera_rotation": camera_rotation,
@@ -209,7 +198,6 @@ class SceneLoss(nn.Module):
         objects = pred["objects"]
         logits = objects["class_logits"]
         positions = objects["position"]
-        scales = objects["scale"]
         rotations = objects["rotation"]
 
         if logits.ndim != 3 or logits.shape[-1] < 2:
@@ -218,43 +206,38 @@ class SceneLoss(nn.Module):
         query_shape = logits.shape[:2]
         if (
             positions.shape != (*query_shape, 3)
-            or scales.shape != (*query_shape, 3)
             or rotations.shape != (*query_shape, 6)
         ):
             raise ValueError("Object prediction shapes are incompatible")
 
-        return logits, positions, scales, rotations
+        return logits, positions, rotations
 
-    def _object_targets(self, target, logits, positions, scales, rotations):
+    def _object_targets(self, target, logits, positions, rotations):
         """Read object targets from generated JSON or a tensor dictionary."""
         objects = target["objects"]
 
         if isinstance(objects, list):
             classes = [obj["class_id"] for obj in objects]
             points = [obj["position"] for obj in objects]
-            sizes = [obj["scale"] for obj in objects]
             matrices = [obj["rotation_matrix"] for obj in objects]
 
             if not objects:
                 points = positions.new_empty((0, 3))
-                sizes = scales.new_empty((0, 3))
                 matrices = rotations.new_empty((0, 3, 3))
         else:
             classes = objects["classes"]
             points = objects["positions"]
-            sizes = objects["scales"]
             matrices = objects["rotations"]
 
         classes = torch.as_tensor(classes, device=logits.device)
         classes = classes.long()
         points = torch.as_tensor(points, device=positions.device, dtype=positions.dtype)
-        sizes = torch.as_tensor(sizes, device=scales.device, dtype=scales.dtype)
         matrices = torch.as_tensor(matrices, device=rotations.device, dtype=rotations.dtype)
 
         if matrices.shape == (classes.numel(), 6):
             matrices = rotation_6d_to_matrix(matrices)
 
-        return classes, points, sizes, matrices
+        return classes, points, matrices
 
     def _camera_losses(self, pred, targets):
         """Compute camera losses while preserving the dataset view order."""

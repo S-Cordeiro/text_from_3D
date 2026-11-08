@@ -22,7 +22,7 @@ from src.dataset.scene_dataset import SceneDataset, collate_scenes
 from src.losses.scene_loss import SceneLoss
 from src.models.vision.config import SceneModelConfig
 from src.vision_audit import audit_dataset
-from src.models.vision.model import SceneModel
+from src.models.vision.model import SceneModel, without_scale_head
 
 
 def predict(model, images, device):
@@ -40,7 +40,6 @@ def format_metrics(metrics):
         f"loss={metrics['total']:.4f}\n"
         f"  objects  | class={metrics['object_class']:.4f}"
         f" | position={metrics['object_position']:.4f}"
-        f" | scale={metrics['object_scale']:.4f}"
         f" | object rotation={metrics['object_rotation']:.4f}"
         f" | correct matches={100 * metrics['matching_accuracy']:.1f}%\n"
         f"  cameras | position={metrics['camera_position']:.4f}"
@@ -75,7 +74,7 @@ def evaluate(model, scene_loss, loader, device, by_count=False, should_stop=None
                 # Object geometry and accuracy are averaged over objects;
                 # other losses are averaged over scenes.
                 weight = object_count if name in (
-                    'object_position', 'object_scale', 'object_rotation',
+                    'object_position', 'object_rotation',
                     'object_rotation_angle', 'matching_accuracy',
                 ) else scene_count
                 if name == 'object_rotation_angle':
@@ -310,7 +309,7 @@ def main():
         target_config.pop('dino_unfreeze_blocks')
         if initial_config != target_config:
             raise ValueError('Initialization checkpoint architecture does not match')
-        model.load_state_dict(initial['model_state_dict'])
+        model.load_state_dict(without_scale_head(initial['model_state_dict']))
         del initial
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if trainable > 15_000_000:

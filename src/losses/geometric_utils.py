@@ -46,7 +46,7 @@ def object_rotation_loss(predicted, target, classes):
 
     Cubes minimize squared Frobenius distance over their 24 proper rotations:
     equivalent targets are target @ S, with S acting in local coordinates.
-    This assumes regular cubes, independently of the supervised XYZ scales.
+    This assumes regular cubes: the dataset uses one fixed size per object type.
     Cylinders compare their unoriented local Z axes; spheres contribute zero.
     Other classes retain the squared Frobenius distance.
     """
@@ -61,14 +61,6 @@ def object_rotation_loss(predicted, target, classes):
     axis_cosine = (predicted[..., :, 2] * target[..., :, 2]).sum(dim=-1)
     cylinder_losses = 1 - axis_cosine.abs().clamp(max=1)
     losses = torch.where(classes == 2, cylinder_losses, losses)
-    losses = torch.where(classes == 1, losses * 0, losses)
-    return losses.mean()
-
-
-def object_scale_loss(predicted, target, classes):
-    """Mean per-object Smooth L1: XYZ for cubes, Z for cylinders, zero for spheres."""
-    errors = F.smooth_l1_loss(predicted, target, reduction="none")
-    losses = torch.where(classes == 2, errors[..., 2], errors.mean(dim=-1))
     losses = torch.where(classes == 1, losses * 0, losses)
     return losses.mean()
 

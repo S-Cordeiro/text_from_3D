@@ -10,6 +10,11 @@ from .config import (
 from .visual_encoder import VisualEncoder
 from .camera_decoder import CameraDecoder, CameraPredictionHead
 
+def without_scale_head(state_dict):
+    """Drop the scale head of checkpoints trained before sizes were fixed."""
+    return {k: v for k, v in state_dict.items() if '.scale_head.' not in k}
+
+
 class SceneModel(nn.Module):
 
     @classmethod
@@ -28,7 +33,7 @@ class SceneModel(nn.Module):
         ):
             config[name] = config_type(**config[name])
         model = cls(SceneModelConfig(**config))
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(without_scale_head(checkpoint['model_state_dict']))
         return model.to(device).eval()
 
     def __init__(self, config):
