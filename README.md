@@ -76,14 +76,32 @@ FineWeb-Edu [4], about 20 tokens per parameter. One epoch takes 58,629 steps of
 The code is strongly inspired by Andrej Karpathy's nanochat [5] and his
 lecture series ([src/models/language](src/models/language)).
 
-### 2.3 VLM — in progress
+### 2.3 VLM — work in progress
 
-The current step is a Flamingo-style VLM [6]: gated cross-attention layers,
-inserted between the GPT blocks, read the visual tokens of the vision model. The
-goal is a first baseline on the questions of 2.1
-([src/models/vlm](src/models/vlm)).
+**Initial plan.** Since the point of the project is to learn these
+architectures, the plan was to pre-train the language model of 2.2 and then
+adapt it into a Flamingo-style VLM [6], whose gated cross-attention layers,
+inserted between the GPT blocks, read the visual tokens of the vision model of
+stage 1 ([src/models/vlm](src/models/vlm)).
 
-Training instructions: [src/README.md](src/README.md).
+**A mismatch with the dataset.** I chose this plan for learning purposes
+rather than for this dataset, and in hindsight it is not the best fit. The
+questions are short, follow a fixed set of templates, and most answers are one
+or two words. The language model is still essential to read the questions, but
+its generative abilities go unused. Much of the difficulty also lies in what
+the visual tokens encode (colour, visibility, camera poses), and in how the
+model relates them across views.
+
+**Where I am now.** I am still working out which architecture best fits the
+task. The most likely option is a method similar to MDETR [7], which fuses
+text and image features early in a shared transformer, so that the question
+conditions the object queries directly. This would mean training a
+bidirectional, BERT-style text encoder [8] instead of the autoregressive GPT
+of 2.2.
+
+This section reflects ongoing research, not settled results. Some of the
+choices above will turn out to be wrong, and I will revise them as results
+come in.
 
 ---
 
@@ -95,3 +113,5 @@ Training instructions: [src/README.md](src/README.md).
 4. Penedo et al. *The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale*. NeurIPS 2024. [arXiv:2406.17557](https://arxiv.org/abs/2406.17557)
 5. Karpathy. *nanochat*. 2025. [github.com/karpathy/nanochat](https://github.com/karpathy/nanochat)
 6. Alayrac et al. *Flamingo: a Visual Language Model for Few-Shot Learning*. NeurIPS 2022. [arXiv:2204.14198](https://arxiv.org/abs/2204.14198)
+7. Kamath et al. *MDETR — Modulated Detection for End-to-End Multi-Modal Understanding*. ICCV 2021. [arXiv:2104.12763](https://arxiv.org/abs/2104.12763)
+8. Devlin et al. *BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding*. NAACL 2019. [arXiv:1810.04805](https://arxiv.org/abs/1810.04805)
