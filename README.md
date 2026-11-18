@@ -67,41 +67,21 @@ cube?* The sphere is invisible from camera 4; camera 2 shows that it is a
 
 ![A scene seen from camera 4 (sphere hidden by the red cube) and camera 2 (sphere visible).](figures/occlusion-example.png)
 
-### 2.2 Language model
+### 2.2 VLM — work in progress
 
-A 96M-parameter GPT (8 layers, 8 heads, width 768, 1,024-token context,
-SwiGLU feed-forward, GPT-2 tokenizer), trained from scratch on 1.9B tokens of
-FineWeb-Edu [4], about 20 tokens per parameter. One epoch takes 58,629 steps of
-32,768 tokens on a single RTX 4000 Ada, for a final validation loss of 3.48.
-The code is strongly inspired by Andrej Karpathy's nanochat [5] and his
-lecture series ([src/models/language](src/models/language)).
+**Architecture.** The model follows MDETR [4], a good fit for this task. The
+questions are short and templated, and most answers are one or two words, so
+the difficulty lies less in generating text than in grounding the question in
+the scene: which objects it refers to, what each camera sees, and how the
+views relate. MDETR fuses text and image features early, in a shared
+transformer, so that the question conditions the object queries directly. It
+also extends naturally the DETR-style model of stage 1, whose visual tokens
+and object queries it reuses. The question is encoded by a bidirectional,
+BERT-style text encoder [5], which I plan to train myself from scratch; this
+training is in progress ([src/models/mdetr](src/models/mdetr)).
 
-### 2.3 VLM — work in progress
-
-**Initial plan.** Since the point of the project is to learn these
-architectures, the plan was to pre-train the language model of 2.2 and then
-adapt it into a Flamingo-style VLM [6], whose gated cross-attention layers,
-inserted between the GPT blocks, read the visual tokens of the vision model of
-stage 1 ([src/models/vlm](src/models/vlm)).
-
-**A mismatch with the dataset.** I chose this plan for learning purposes
-rather than for this dataset, and in hindsight it is not the best fit. The
-questions are short, follow a fixed set of templates, and most answers are one
-or two words. The language model is still essential to read the questions, but
-its generative abilities go unused. Much of the difficulty also lies in what
-the visual tokens encode (colour, visibility, camera poses), and in how the
-model relates them across views.
-
-**Where I am now.** I am still working out which architecture best fits the
-task. The most likely option is a method similar to MDETR [7], which fuses
-text and image features early in a shared transformer, so that the question
-conditions the object queries directly. This would mean training a
-bidirectional, BERT-style text encoder [8] instead of the autoregressive GPT
-of 2.2.
-
-This section reflects ongoing research, not settled results. Some of the
-choices above will turn out to be wrong, and I will revise them as results
-come in.
+This section reflects ongoing work, not settled results, and will be updated
+as results come in.
 
 ---
 
@@ -110,8 +90,5 @@ come in.
 1. Carion et al. *End-to-End Object Detection with Transformers* (DETR). ECCV 2020. [arXiv:2005.12872](https://arxiv.org/abs/2005.12872)
 2. Johnson et al. *CLEVR: A Diagnostic Dataset for Compositional Language and Elementary Visual Reasoning*. CVPR 2017. [arXiv:1612.06890](https://arxiv.org/abs/1612.06890)
 3. Oquab et al. *DINOv2: Learning Robust Visual Features without Supervision*. TMLR 2024. [arXiv:2304.07193](https://arxiv.org/abs/2304.07193)
-4. Penedo et al. *The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale*. NeurIPS 2024. [arXiv:2406.17557](https://arxiv.org/abs/2406.17557)
-5. Karpathy. *nanochat*. 2025. [github.com/karpathy/nanochat](https://github.com/karpathy/nanochat)
-6. Alayrac et al. *Flamingo: a Visual Language Model for Few-Shot Learning*. NeurIPS 2022. [arXiv:2204.14198](https://arxiv.org/abs/2204.14198)
-7. Kamath et al. *MDETR — Modulated Detection for End-to-End Multi-Modal Understanding*. ICCV 2021. [arXiv:2104.12763](https://arxiv.org/abs/2104.12763)
-8. Devlin et al. *BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding*. NAACL 2019. [arXiv:1810.04805](https://arxiv.org/abs/1810.04805)
+4. Kamath et al. *MDETR — Modulated Detection for End-to-End Multi-Modal Understanding*. ICCV 2021. [arXiv:2104.12763](https://arxiv.org/abs/2104.12763)
+5. Devlin et al. *BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding*. NAACL 2019. [arXiv:1810.04805](https://arxiv.org/abs/1810.04805)
